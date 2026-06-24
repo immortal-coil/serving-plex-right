@@ -687,4 +687,40 @@ so Let's Encrypt HTTP-01 challenge can complete.
 
 ---
 
+## Conclusions
+
+The A/B results tell a clear story about where nginx actually moves the needle.
+
+**Gzip is the biggest win on WAN.** The 36ms improvement on `/web/index.html`
+comes entirely from compressing the JS, CSS, and JSON that the Plex UI loads on
+every page. The baseline sent those uncompressed; the tuned config does not.
+On LAN, gigabit swallows the difference and you won't see it. On WAN, it's the
+largest single gain in the test.
+
+**Thumbnail caching compounds over time.** A single thumbnail miss costs 12ms
+more through nginx than going direct to Plex. But every subsequent hit saves
+37ms. At library scale, opening a 50-movie library goes from ~2,500ms of
+thumbnail load time to ~650ms after the cache is warm. The cache pays for itself
+after the second request per image.
+
+**nginx is not the bottleneck.** The ~79ms gap between nginx+HTTPS and raw HTTP
+is almost entirely TLS handshake cost at a 35ms RTT. The proxy itself adds
+negligible latency. If you're already serving over HTTPS, the gzip and caching
+gains recover most of that TLS overhead.
+
+**Streaming is unaffected by nginx tuning.** Start times, buffering behavior,
+and playback quality are dominated by Plex's own seek-and-respond time and the
+client's decode capability. The nginx config's job on the streaming path is to
+stay out of the way: `proxy_buffering off` and large socket buffers ensure it
+does.
+
+**The structural fixes matter more than the performance tuning.** The baseline
+config had two silent failure modes: file-extension media matching that falls
+through for unknown extensions, and `proxy_set_header` in location blocks that
+drops parent headers for any location that doesn't repeat them. These don't show
+up in benchmarks but cause subtle breakage in real deployments. The tuned config
+eliminates both.
+
+---
+
 Built with the assistance of [Claude Code](https://claude.ai/code).
