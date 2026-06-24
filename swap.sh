@@ -2,7 +2,7 @@
 # Usage: ./swap.sh original | optimized
 set -euo pipefail
 
-NGINX_HOST="gejames@192.168.5.100"
+NGINX_HOST="${NGINX_HOST:-user@192.168.1.x}"  # set via env or edit directly
 REMOTE_CONF="/etc/nginx/sites-enabled/plex.conf"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
