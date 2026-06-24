@@ -471,7 +471,7 @@ NAS is fine for direct play, since the bottleneck there is network, not seek tim
 
 Plex's SQLite database accumulates fragmentation and bloat over time. Query
 times degrade gradually — you won't notice until browsing feels sluggish.
-[PlexDBRepair](https://github.com/ChuckPa/PlexDBRepair) is a free tool that
+[PlexDBRepair](https://github.com/ChuckPa/DBRepair) is a free tool that
 vacuums, reindexes, and repairs the database without touching your library data.
 
 ```bash
@@ -479,7 +479,7 @@ vacuums, reindexes, and repairs the database without touching your library data.
 sudo systemctl stop plexmediaserver
 
 # Download and run
-wget https://github.com/ChuckPa/PlexDBRepair/releases/latest/download/DBRepair.sh
+wget https://github.com/ChuckPa/DBRepair/releases/latest/download/DBRepair.sh
 chmod +x DBRepair.sh
 sudo ./DBRepair.sh
 
