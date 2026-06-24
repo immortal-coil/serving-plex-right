@@ -275,7 +275,7 @@ net.ipv4.tcp_fastopen = 3
 
 # Raise socket buffer ceilings for 4K HEVC throughput
 # With proxy_buffering off, the kernel socket buffer is the stream path
-# Default 256KB can throttle a 4K stream at 50Mbps before the player pre-buffers enough
+# Default 256KB can throttle a 4K stream at 50 Mbps before the player pre-buffers enough
 net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 net.ipv4.tcp_rmem = 4096 87380 16777216
@@ -288,7 +288,7 @@ Verify: `sysctl net.ipv4.tcp_congestion_control net.ipv4.tcp_slow_start_after_id
 
 ---
 
-## Plex Settings
+## Plex settings
 
 In Plex web → Settings:
 
@@ -444,7 +444,7 @@ nginx tuning is secondary.
 ## Storage
 
 nginx and TCP tuning have a ceiling: once you're at the TLS handshake floor
-(~12ms on a local gigabit network), there's nothing left for nginx to optimize.
+(~12.5 ms on a local gigabit network), there's nothing left for nginx to optimize.
 The next layer down is storage — and it's often the bigger bottleneck.
 
 ### NVMe for Plex metadata
@@ -512,7 +512,7 @@ curl -w "connect:%{time_connect}s tls:%{time_appconnect}s ttfb:%{time_starttrans
 
 ### A note on LAN testing
 
-LAN results are useful for isolating specific behaviours (cache hit/miss timing,
+LAN results are useful for isolating specific behaviors (cache hit/miss timing,
 TLS session resumption) but are not a representative measure of the tuning's
 real-world value. On a LAN, clients can reach Plex directly over HTTP on
 port 32400, bypassing nginx and TLS entirely — 0.3ms vs 13ms. The 13ms TLS
@@ -530,7 +530,7 @@ are real, and there's no HTTP shortcut available.
 | `/web/index.html` | 13.8ms | 13.7ms |
 | `/library/sections` | 14.1ms | 14.1ms |
 
-TLS handshake (~12.5ms) dominates. Plex itself responds in under 1ms. Neither
+TLS handshake (~12.5 ms) dominates. Plex itself responds in under 1ms. Neither
 config can improve on this floor, and gzip savings are invisible because gigabit
 absorbs the extra uncompressed bytes in microseconds.
 
@@ -544,7 +544,7 @@ absorbs the extra uncompressed bytes in microseconds.
 
 Thumbnail caching is visible even on LAN. The baseline round-trips to Plex on
 every request; the tuned config serves from nginx at TLS-floor speed after the
-first load. At library scale (50 movies): ~650ms vs ~2.5 seconds of thumbnail
+first load. At library scale (50 movies): ~650ms vs ~2,500ms of thumbnail
 load time.
 
 ### WAN results (OVH VPS, ~35ms RTT) — tuned config wins clearly
@@ -582,10 +582,11 @@ Measured from the same VPS with port 32400 temporarily open:
 
 This is the theoretical floor — no proxy overhead, no TLS, same network path.
 
-**UI total (119ms) is comparable to nginx+HTTPS TTFB (153ms).** The 34ms gap
-is almost entirely TLS handshake cost (~35ms at this RTT). Gzip saves ~36ms on
-transfer, nearly canceling the TLS overhead — so nginx+HTTPS+gzip delivers UI
-loading close to what raw HTTP to Plex would.
+**nginx+HTTPS TTFB (153ms) vs direct HTTP TTFB (~74ms):** the ~79ms gap is
+predominantly TLS handshake cost at a 35ms RTT. Gzip recovers ~36ms of that
+transfer time — so the net premium for nginx+HTTPS over raw HTTP is roughly one
+extra round-trip for the TLS exchange, and you get encryption, caching, and
+compression for it.
 
 **Thumbnails via nginx HIT (152ms) vs direct HTTP (103ms):** the ~49ms
 difference is TLS cost. You're paying for encryption, not proxy overhead.
