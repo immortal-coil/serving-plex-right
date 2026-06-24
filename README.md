@@ -1,14 +1,15 @@
 # Plex nginx Performance Tuning
 
-A guide to running nginx as a reverse proxy in front of Plex Media Server with
-tuning for fast UI loading and zero-buffer direct-play streaming. Covers nginx
-config, OS TCP settings, and Plex network settings.
+nginx reverse proxy configuration for Plex, with A/B test results comparing a
+baseline config against the tuned setup documented here. The tuned config
+delivers 36ms faster UI loads on WAN and cuts thumbnail load time by 37ms.
 
-Tested with nginx 1.30, Plex on Debian/Ubuntu, clients on a LAN (smart TVs,
-streaming sticks, Chrome on Windows). Direct-play HEVC/AC3 library — no transcoding.
+Tested with nginx 1.30 on Debian/Ubuntu. LAN clients: smart TVs, streaming
+sticks, Chrome on Windows. WAN tested from an OVH VPS at ~35ms RTT.
+Direct-play HEVC/AC3 library. No transcoding.
 
 > **Disclaimer:** This is a reference guide documenting one homelab configuration.
-> It is provided for educational purposes only — not as hardened production advice.
+> It is provided for educational purposes only. Not hardened production advice.
 > Test any changes in your own environment before deploying. No warranty is implied.
 > This project is not affiliated with, endorsed by, or sponsored by Plex Inc.
 
@@ -18,17 +19,17 @@ streaming sticks, Chrome on Windows). Direct-play HEVC/AC3 library — no transc
 
 Plex already has its own HTTP server, so why add nginx?
 
-- **HTTPS with a real cert** — nginx handles TLS termination with a Let's Encrypt
+- **HTTPS with a real cert:** nginx handles TLS termination with a Let's Encrypt
   cert. Plex's built-in HTTPS uses a self-signed cert that causes browser warnings
   and can't be verified by apps.
-- **HTTP/2** — nginx speaks HTTP/2 to clients, which multiplexes the ~20 parallel
+- **HTTP/2:** nginx speaks HTTP/2 to clients, which multiplexes the ~20 parallel
   requests a Plex page load fires (posters, metadata, assets). Plex's own server
   uses HTTP/1.1.
-- **Thumbnail caching** — nginx can cache poster and artwork responses so repeated
+- **Thumbnail caching:** nginx can cache poster and artwork responses so repeated
   requests (opening a library, scrolling) skip the round-trip to Plex entirely.
-- **Compression** — nginx gzips JSON and web assets before they leave the server.
+- **Compression:** nginx gzips JSON and web assets before they leave the server.
   Plex's built-in compression is less controllable.
-- **Streaming control** — `proxy_buffering off` on media paths means nginx passes
+- **Streaming control:** `proxy_buffering off` on media paths means nginx passes
   video chunks straight through to the client instead of accumulating them first,
   eliminating nginx-induced buffering stalls.
 
@@ -42,15 +43,15 @@ This guide assumes nginx and Plex run on the **same host**:
 Client → nginx :443 (TLS) → Plex :32400 (localhost)
 ```
 
-If you have an SNI router or another reverse proxy in front of nginx (common in
-homelab setups), that outer layer should do passthrough — TLS must terminate at
-nginx for HTTP/2 and the cert to work correctly.
+If you have an SNI router or another reverse proxy in front of nginx, that outer
+layer should do passthrough. TLS must terminate at nginx for HTTP/2 and the cert
+to work correctly.
 
 ---
 
 ## Prerequisites
 
-- nginx 1.25.1 or newer (for `http2 on;` syntax — older versions use `listen 443 ssl http2;`)
+- nginx 1.25.1 or newer (for `http2 on;` syntax; older versions use `listen 443 ssl http2;`)
 - A valid TLS certificate for your Plex domain (Let's Encrypt recommended)
 - Plex Media Server running and accessible on `localhost:32400`
 - The nginx cache directory created before first use:
@@ -64,7 +65,7 @@ chown www-data:www-data /var/cache/nginx   # adjust user for your distro
 
 ## nginx config
 
-### nginx.conf — additions to the `http {}` block
+### nginx.conf additions to the `http {}` block
 
 ```nginx
 # Proxy cache zone for Plex thumbnails/posters
@@ -95,7 +96,7 @@ open_file_cache_valid 120s;
 access_log /var/log/nginx/access.log combined buffer=16k flush=5m;
 ```
 
-### Plex vhost — `/etc/nginx/sites-enabled/plex.conf`
+### Plex vhost: `/etc/nginx/sites-enabled/plex.conf`
 
 ```nginx
 upstream plex {
@@ -225,13 +226,13 @@ Plex appends `X-Plex-Token` as a query parameter on thumbnail requests:
 
 nginx's default cache key includes `$request_uri` (the full query string). Each
 device has a different token, so each device gets its own cache entry for the
-same poster art — they never share.
+same poster art. They never share.
 
 The fix is to build the key from only the parameters that identify the image:
 `$arg_url`, `$arg_width`, `$arg_height`. This excludes the token while keeping
 the parts that distinguish one image from another.
 
-Do not use `"$host$uri"` alone (path only, no query string) — all thumbnail
+Do not use `"$host$uri"` alone (path only, no query string). All thumbnail
 requests share the same path `/photo/:/transcode`, so that key would collapse
 every image to a single cache entry and serve one image for everything.
 
@@ -241,8 +242,9 @@ Plex sends `Cache-Control: no-cache` on `/photo/:/` responses. By default nginx
 respects this and skips the cache, making every thumbnail request a cache miss.
 This directive tells nginx to ignore Plex's Cache-Control and apply your own TTL.
 
-It's safe to ignore Cache-Control on thumbnails — poster art doesn't change mid-session.
-Don't use this on the UI or API locations where Plex's cache headers are intentional.
+It's safe to ignore Cache-Control on thumbnails. Poster art doesn't change
+mid-session. Don't use this on the UI or API locations where Plex's cache
+headers are intentional.
 
 ---
 
@@ -252,7 +254,7 @@ These kernel settings improve streaming behavior. Apply on the machine running n
 
 If your Plex host is a **Proxmox LXC container**: `net.ipv4.*` settings must be
 applied inside the container (they're per network namespace). `net.core.*` and
-`net.ipv4.tcp_congestion_control` must be set on the Proxmox host — the LXC
+`net.ipv4.tcp_congestion_control` must be set on the Proxmox host. The LXC
 shares the host kernel for those.
 
 Create `/etc/sysctl.d/99-plex-perf.conf`:
@@ -293,16 +295,16 @@ Verify: `sysctl net.ipv4.tcp_congestion_control net.ipv4.tcp_slow_start_after_id
 In Plex web → Settings:
 
 **Settings → Remote Access:**
-- Disable relay — relay routes connections through Plex's cloud servers when it
+- Disable relay. It routes connections through Plex's cloud servers when it
   can't confirm a direct path. On LAN this adds unnecessary latency.
 - Set LAN Bandwidth to match your network (e.g. `1000 Mbps` for gigabit). A low
   value throttles direct play before nginx sees the traffic.
 
 **Settings → Network:**
-- **Custom server access URLs** — add `https://plex.example.com`. Required for
+- **Custom server access URLs:** add `https://plex.example.com`. Required for
   Plex's DNS rebinding protection to accept requests that arrive with your domain
   as the Host header.
-- **List of IP addresses and networks that are allowed without auth** — add your
+- **List of IP addresses and networks that are allowed without auth:** add your
   LAN subnet (e.g. `192.168.1.0/24`). This skips per-request token validation for
   local clients. Most visible as a TTFB reduction on API calls like `/library/sections`.
 
@@ -343,11 +345,10 @@ curl -w "TTFB: %{time_starttransfer}s\n" -o /dev/null -s https://plex.example.co
 Whether Plex streams a file directly or transcodes it depends entirely on what
 the **client** can decode, not the library encoding. The Plex dashboard
 (Settings → Troubleshooting → Dashboard) shows "Direct Play", "Direct Stream",
-or "Transcode" for every active session — always verify there rather than
-assuming.
+or "Transcode" for every active session. Always verify there rather than assuming.
 
 **Direct Play** means Plex sends the file bytes to the client unmodified. The
-client decodes everything locally. This is the ideal path — zero CPU on the
+client decodes everything locally. This is the ideal path. Zero CPU on the
 server, no quality loss, lowest possible latency to first frame.
 
 **Direct Stream** means the container or audio track is remuxed but video is
@@ -367,15 +368,15 @@ Chrome on Windows supports hardware HEVC decoding as of Chrome 107+, provided:
 
 With those in place, Chrome direct plays HEVC to the Plex web client. AC3
 audio can also pass through in some configurations. Confirm in the Plex
-dashboard — if it shows Direct Play, no transcoding is happening regardless
+dashboard. If it shows Direct Play, no transcoding is happening regardless
 of the browser.
 
-Chrome on Linux and macOS has more limited HEVC support — those clients are
+Chrome on Linux and macOS has more limited HEVC support. Those clients are
 more likely to trigger a transcode. Check the dashboard rather than assuming.
 
 ### Library encoding profile
 
-Files in this library are encoded with HandBrake using the following settings:
+Files in this test library are encoded with HandBrake using the following settings:
 
 ```
 -e x265_10bit -q 23 --encoder-preset slow
@@ -388,14 +389,14 @@ Files in this library are encoded with HandBrake using the following settings:
 
 Key choices and why they matter for direct play:
 
-- **`x265_10bit`** — HEVC 10-bit. Widely supported by hardware decoders on modern devices. 10-bit reduces banding on gradients with no extra storage cost at typical quality settings.
-- **`-q 23`** — RF 23 quality. Good balance of size and quality for 1080p; well within the bitrate range all direct-play clients handle comfortably.
-- **`ac3 640 kbps 5.1`** — AC3 (Dolby Digital) at 640 kbps. AC3 is the most compatible surround codec across Plex clients. Virtually every TV, streaming stick, and AV receiver passes it through without transcoding.
-- **`--first-audio --audio-lang-list eng,und`** — keeps only the first English or undefined-language track. Drops unwanted tracks, keeps file size predictable, and ensures a single known-good stream is always selected.
-- **`-X 1920 -Y 1080`** — caps output at 1080p. Keeps file sizes predictable and ensures hardware decoders that max out at 1080p don't fall back to software decode.
-- **`--crop 0:0:0:0`** — explicit no-crop. Prevents HandBrake's auto-detect from cropping incorrectly on sources with inconsistent black bars.
-- **`--format av_mkv`** — MKV container. Handles any codec combination, supports chapters and subtitle tracks, and is universally supported by Plex.
-- **`--encopts "bframes=3"`** — 3 B-frames. Improves x265 compression efficiency without noticeably increasing decode complexity for hardware decoders.
+- **`x265_10bit`:** HEVC 10-bit. Widely supported by hardware decoders on modern devices. 10-bit reduces banding on gradients with no extra storage cost at typical quality settings.
+- **`-q 23`:** RF 23 quality. Good balance of size and quality for 1080p; well within the bitrate range all direct-play clients handle comfortably.
+- **`ac3 640 kbps 5.1`:** AC3 (Dolby Digital) at 640 kbps. AC3 is the most compatible surround codec across Plex clients. Virtually every TV, streaming stick, and AV receiver passes it through without transcoding.
+- **`--first-audio --audio-lang-list eng,und`:** keeps only the first English or undefined-language track. Drops unwanted tracks, keeps file size predictable, and ensures a single known-good stream is always selected.
+- **`-X 1920 -Y 1080`:** caps output at 1080p. Keeps file sizes predictable and ensures hardware decoders that max out at 1080p don't fall back to software decode.
+- **`--crop 0:0:0:0`:** explicit no-crop. Prevents HandBrake's auto-detect from cropping incorrectly on sources with inconsistent black bars.
+- **`--format av_mkv`:** MKV container. Handles any codec combination, supports chapters and subtitle tracks, and is universally supported by Plex.
+- **`--encopts "bframes=3"`:** 3 B-frames. Improves x265 compression efficiency without noticeably increasing decode complexity for hardware decoders.
 
 This profile produces files that direct play on every client in the table below.
 
@@ -414,10 +415,11 @@ For faster encodes on a machine with an NVIDIA GPU, swap the encoder and quality
 
 The only differences from the software profile:
 
-- **`nvenc_h265_10bit`** — uses NVIDIA's hardware H.265 encoder instead of x265. Encodes 5–10× faster at the cost of slightly larger files at the same perceptual quality.
-- **`-q 27`** — NVENC's quality scale differs from x265's RF; a higher RF targets similar perceptual quality and bitrate. The right value depends on your GPU and source material — treat 27 as a starting point and adjust by comparing output.
+- **`nvenc_h265_10bit`:** uses NVIDIA's hardware H.265 encoder instead of x265. Encodes 5–10× faster at the cost of slightly larger files at the same perceptual quality.
+- **`-q 27`:** NVENC's quality scale differs from x265's RF; a higher RF targets similar perceptual quality and bitrate. The right value depends on your GPU and source material. Treat 27 as a starting point and adjust by comparing output.
 
-Everything else — container, audio, resolution, crop, anamorphic — is identical. Output files are indistinguishable to Plex clients and direct play the same way.
+Container, audio, resolution, crop, and anamorphic settings are identical.
+Output files are indistinguishable to Plex clients and direct play the same way.
 
 ### Clients that reliably direct play HEVC/AC3
 
@@ -434,7 +436,7 @@ Everything else — container, audio, resolution, crop, anamorphic — is identi
 | Infuse | ✓ | ✓ |
 
 **All direct-play:** `proxy_buffering off` on the streaming path and the TCP
-socket buffer tuning in this guide are what matter most — nginx's job is to
+socket buffer tuning in this guide are what matter most. nginx's job is to
 stay out of the way.
 
 **Mixed or transcoding clients:** hardware transcoding (Intel QSV, NVIDIA NVENC,
@@ -447,37 +449,39 @@ is secondary to having adequate GPU capacity on the server.
 
 nginx and TCP tuning have a ceiling: once you're at the TLS handshake floor
 (~12.5 ms on a local gigabit network), there's nothing left for nginx to optimize.
-The next layer down is storage — and it's often the bigger bottleneck.
+The next layer down is storage. It's often the bigger bottleneck.
 
 ### NVMe for Plex metadata
 
-Plex's metadata lives in a SQLite database. Every library browse, search, and
-poster load issues multiple queries against it. On spinning disk or even SATA
-SSD, this database becomes the bottleneck well before nginx does.
+Plex's Library directory contains the SQLite database (under
+`Plug-in Support/Databases/`), poster and artwork files (under separate
+subdirectories), and other metadata. Every library browse and search queries
+the database; every poster load reads from disk. These are spread across
+different subdirectories but all live under the same Library root. On spinning
+disk or even SATA SSD, this becomes the bottleneck well before nginx does.
 
-**Put the Plex metadata directory on NVMe.** The default locations:
+**Put the entire Plex Library directory on NVMe.** The default locations:
 
-| Platform | Metadata path |
+| Platform | Library path |
 |---|---|
 | Linux | `/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/` |
 | macOS | `~/Library/Application Support/Plex Media Server/` |
 | Windows | `%LOCALAPPDATA%\Plex Media Server\` |
 | Docker | wherever you mount `/config` |
 
-The metadata directory contains the SQLite DB (`com.plexapp.plugins.library.db`),
-thumbnails Plex generates itself, and episode/movie bundles. It does not need to
-be on the same drive as your media — and for performance, it shouldn't be.
+This directory does not need to be on the same drive as your media. For
+performance, it shouldn't be.
 
 If you can't move the whole directory, symlinking `Plug-in Support/Databases/`
 to NVMe gets the highest-impact subset (the SQLite DB files).
 
-Media files themselves do not need NVMe — sequential read from spinning disk or
+Media files themselves do not need NVMe. Sequential read from spinning disk or
 NAS is fine for direct play, since the bottleneck there is network, not seek time.
 
 ### PlexDBRepair
 
 Plex's SQLite database accumulates fragmentation and bloat over time. Query
-times degrade gradually — you won't notice until browsing feels sluggish.
+times degrade gradually. You won't notice until browsing feels sluggish.
 [PlexDBRepair](https://github.com/ChuckPa/DBRepair) is a free tool that
 vacuums, reindexes, and repairs the database without touching your library data.
 
@@ -495,7 +499,7 @@ sudo systemctl start plexmediaserver
 ```
 
 Run quarterly, or whenever you notice library browse performance degrading.
-Back up the database directory first — the tool is safe but a backup costs nothing.
+Back up the database directory first. The tool is safe, but a backup costs nothing.
 
 ---
 
@@ -517,7 +521,7 @@ curl -w "connect:%{time_connect}s tls:%{time_appconnect}s ttfb:%{time_starttrans
 LAN results are useful for isolating specific behaviors (cache hit/miss timing,
 TLS session resumption) but are not a representative measure of the tuning's
 real-world value. On a LAN, clients can reach Plex directly over HTTP on
-port 32400, bypassing nginx and TLS entirely — 0.3ms vs 13ms. The 13ms TLS
+port 32400, bypassing nginx and TLS entirely (0.3ms vs 13ms). The 13ms TLS
 floor that dominates every LAN measurement is an unavoidable constant, not
 something the nginx config can affect. **WAN results are the meaningful
 comparison** because transfer time and congestion control matter, gzip savings
@@ -525,7 +529,7 @@ are real, and there's no HTTP shortcut available.
 
 ### LAN results (same gigabit segment, ~0.2ms RTT)
 
-#### UI and API — no measurable difference on LAN
+#### UI and API: no measurable difference on LAN
 
 | Endpoint | Baseline TTFB | Tuned TTFB |
 |---|---|---|
@@ -536,7 +540,7 @@ TLS handshake (~12.5 ms) dominates. Plex itself responds in under 1ms. Neither
 config can improve on this floor, and gzip savings are invisible because gigabit
 absorbs the extra uncompressed bytes in microseconds.
 
-#### Thumbnails — large difference even on LAN
+#### Thumbnails: large difference even on LAN
 
 | Request | Tuned | Baseline |
 |---|---|---|
@@ -549,7 +553,7 @@ every request; the tuned config serves from nginx at TLS-floor speed after the
 first load. At library scale (50 movies): ~650ms vs ~2,500ms of thumbnail
 load time.
 
-### WAN results (OVH VPS, ~35ms RTT) — tuned config wins clearly
+### WAN results (OVH VPS, ~35ms RTT): tuned config wins clearly
 
 | Endpoint | Baseline TTFB | Tuned TTFB | Delta |
 |---|---|---|---|
@@ -562,14 +566,14 @@ load time.
 JSON. Over a 35ms WAN path the extra bytes add measurable transfer time; on LAN
 gigabit makes it invisible.
 
-**Thumbnail HITs are 37ms faster** — nginx cache serves at the TLS floor
+**Thumbnail HITs are 37ms faster.** nginx cache serves at the TLS floor
 (152ms) while the baseline always round-trips to Plex (189ms).
 
-**Thumbnail MISSes are 12ms slower** on the first request — this is the cost
+**Thumbnail MISSes are 12ms slower** on the first request. This is the cost
 of nginx fetching and caching the image. It's a one-time penalty per image per
 cache warm cycle; every subsequent request saves 37ms.
 
-**API is identical** — the JSON payload is small enough that gzip savings don't
+**API is identical.** The JSON payload is small enough that gzip savings don't
 affect TTFB regardless of path.
 
 ### Direct Plex WAN baseline (HTTP :32400, no nginx, no TLS)
@@ -582,11 +586,11 @@ Measured from the same VPS with port 32400 temporarily open:
 | `/library/sections` | ~75ms | ~75ms |
 | Thumbnail | ~103ms | ~103ms |
 
-This is the theoretical floor — no proxy overhead, no TLS, same network path.
+This is the theoretical floor: no proxy overhead, no TLS, same network path.
 
 **nginx+HTTPS TTFB (153ms) vs direct HTTP TTFB (~74ms):** the ~79ms gap is
 predominantly TLS handshake cost at a 35ms RTT. Gzip recovers ~36ms of that
-transfer time — so the net premium for nginx+HTTPS over raw HTTP is roughly one
+transfer time. The net premium for nginx+HTTPS over raw HTTP is roughly one
 extra round-trip for the TLS exchange, and you get encryption, caching, and
 compression for it.
 
@@ -599,9 +603,9 @@ the gzip and caching gains offset most of the TLS cost.
 
 ### What the tuning changes did not affect
 
-- Streaming start time — dominated by Plex's seek-and-respond time, not nginx
-- WebSocket reliability — works correctly in both configs
-- API TTFB — response payloads too small for gzip to matter
+- Streaming start time: dominated by Plex's seek-and-respond time, not nginx
+- WebSocket reliability: works correctly in both configs
+- API TTFB: response payloads too small for gzip to matter
 
 ### What the baseline config had wrong
 
@@ -609,7 +613,7 @@ Beyond missing gzip and caching, the baseline had two structural issues:
 
 **File extension media matching.** The baseline matched streaming paths via
 `location ~* \.(mp4|mkv|avi|...)$`. Plex streams video at paths like
-`/library/parts/12345/1/file.mkv` — these do end in a file extension so the
+`/library/parts/12345/1/file.mkv`. These do end in a file extension so the
 match technically works, but only for known extensions. The location silently
 falls through to the catch-all for anything else. The tuned config uses
 `location ~ ^/(library/parts|video)/` which matches all Plex streaming paths
@@ -617,7 +621,7 @@ regardless of extension.
 
 **`proxy_set_header` in each location block.** The baseline defined all headers
 inside each location block. nginx's inheritance rule means any location that
-defines `proxy_set_header` replaces *all* parent-level headers — not just the
+defines `proxy_set_header` replaces *all* parent-level headers. Not just the
 ones it explicitly sets. The baseline happens to work because both locations
 define the same header set, but it's fragile: adding a location without the
 full header set would silently drop headers for that location. The tuned config
@@ -647,8 +651,8 @@ ExecStartPre=/bin/mkdir -p /dev/shm/plex-cache
 ```
 
 The ExecStartPre command runs as the same user as the service. Since `/dev/shm`
-is world-writable, no elevated privileges are needed. `mkdir -p` is idempotent —
-safe to run even if the directory already exists.
+is world-writable, no elevated privileges are needed. `mkdir -p` is idempotent.
+Safe to run even if the directory already exists.
 
 Note: `systemd-tmpfiles` is the usual tool for managing tmpfs directories but
 is blocked inside Proxmox LXC containers due to the user namespace path
