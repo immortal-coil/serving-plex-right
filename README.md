@@ -681,3 +681,7 @@ Create it manually and set the correct ownership for the nginx worker user.
 If your internal hostname is `plex.lan`, you cannot get a public TLS cert for it.
 Use a real public domain (even if it only resolves internally via split DNS)
 so Let's Encrypt HTTP-01 challenge can complete.
+
+---
+
+Built with the assistance of [Claude Code](https://claude.ai/code).
