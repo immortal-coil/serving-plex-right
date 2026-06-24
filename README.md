@@ -520,6 +520,33 @@ The tuned config keeps all headers at the server block level.
 
 ## Common gotchas
 
+**Plex crashes on reboot if its Cache directory is a symlink to tmpfs**
+
+If you've symlinked Plex's Cache directory to `/dev/shm/` for RAM-based caching,
+the target directory is wiped on every reboot. Plex does not recreate it and
+crashes with a `boost::filesystem::create_directories` error instead of starting.
+
+Fix: add `ExecStartPre` to the Plex systemd override so the directory is created
+before Plex starts on every boot.
+
+```bash
+sudo systemctl edit plexmediaserver
+```
+
+Add inside the `[Service]` section:
+
+```ini
+ExecStartPre=/bin/mkdir -p /dev/shm/plex-cache
+```
+
+The ExecStartPre command runs as the same user as the service. Since `/dev/shm`
+is world-writable, no elevated privileges are needed. `mkdir -p` is idempotent —
+safe to run even if the directory already exists.
+
+Note: `systemd-tmpfiles` is the usual tool for managing tmpfs directories but
+is blocked inside Proxmox LXC containers due to the user namespace path
+transition check. ExecStartPre is the correct workaround in that environment.
+
 **`proxy_set_header` in a location block kills parent headers**
 nginx's inheritance rule: defining any `proxy_set_header` in a child context
 replaces all parent-level headers for that context. Keep all headers at the
