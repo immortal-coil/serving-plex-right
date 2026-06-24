@@ -391,7 +391,7 @@ Key choices and why they matter for direct play:
 - **`x265_10bit`** — HEVC 10-bit. Widely supported by hardware decoders on modern devices. 10-bit reduces banding on gradients with no extra storage cost at typical quality settings.
 - **`-q 23`** — RF 23 quality. Good balance of size and quality for 1080p; well within the bitrate range all direct-play clients handle comfortably.
 - **`ac3 640kbps 5.1`** — AC3 (Dolby Digital) at 640kbps. AC3 is the most compatible surround codec across Plex clients. Virtually every TV, streaming stick, and AV receiver passes it through without transcoding.
-- **`--first-audio --audio-lang-list eng,und`** — keeps only the first English or undefined-language track. Avoids multi-track files that confuse some clients into transcoding to pick a different stream.
+- **`--first-audio --audio-lang-list eng,und`** — keeps only the first English or undefined-language track. Drops unwanted tracks, keeps file size predictable, and ensures a single known-good stream is always selected.
 - **`-X 1920 -Y 1080`** — caps output at 1080p. Keeps file sizes predictable and ensures hardware decoders that max out at 1080p don't fall back to software decode.
 - **`--crop 0:0:0:0`** — explicit no-crop. Prevents HandBrake's auto-detect from cropping incorrectly on sources with inconsistent black bars.
 - **`--format av_mkv`** — MKV container. Handles any codec combination, supports chapters and subtitle tracks, and is universally supported by Plex.
@@ -415,7 +415,7 @@ For faster encodes on a machine with an NVIDIA GPU, swap the encoder and quality
 The only differences from the software profile:
 
 - **`nvenc_h265_10bit`** — uses NVIDIA's hardware H.265 encoder instead of x265. Encodes 5–10× faster at the cost of slightly larger files at the same perceptual quality.
-- **`-q 27`** — NVENC's quality scale is not the same as x265's RF. RF 27 on NVENC produces roughly equivalent visual quality to RF 23 on x265; using RF 23 with NVENC would result in unnecessarily large files.
+- **`-q 27`** — NVENC's quality scale differs from x265's RF; a higher RF targets similar perceptual quality and bitrate. The right value depends on your GPU and source material — treat 27 as a starting point and adjust by comparing output.
 
 Everything else — container, audio, resolution, crop, anamorphic — is identical. Output files are indistinguishable to Plex clients and direct play the same way.
 
