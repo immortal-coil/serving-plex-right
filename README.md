@@ -519,6 +519,30 @@ cache warm cycle; every subsequent request saves 37ms.
 **API is identical** — the JSON payload is small enough that gzip savings don't
 affect TTFB regardless of path.
 
+### Direct Plex WAN baseline (HTTP :32400, no nginx, no TLS)
+
+Measured from the same VPS with port 32400 temporarily open:
+
+| Endpoint | TTFB | Total |
+|---|---|---|
+| `/web/index.html` | ~74ms | ~119ms |
+| `/library/sections` | ~75ms | ~75ms |
+| Thumbnail | ~103ms | ~103ms |
+
+This is the theoretical floor — no proxy overhead, no TLS, same network path.
+
+**UI total (119ms) is comparable to nginx+HTTPS TTFB (153ms).** The 34ms gap
+is almost entirely TLS handshake cost (~35ms at this RTT). Gzip saves ~36ms on
+transfer, nearly canceling the TLS overhead — so nginx+HTTPS+gzip delivers UI
+loading close to what raw HTTP to Plex would.
+
+**Thumbnails via nginx HIT (152ms) vs direct HTTP (103ms):** the ~49ms
+difference is TLS cost. You're paying for encryption, not proxy overhead.
+
+**The takeaway:** nginx is not adding meaningful latency beyond TLS. If you're
+serving over HTTPS (which you should be), the proxy overhead is negligible and
+the gzip and caching gains offset most of the TLS cost.
+
 ### What the tuning changes did not affect
 
 - Streaming start time — dominated by Plex's seek-and-respond time, not nginx
