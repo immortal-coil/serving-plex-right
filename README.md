@@ -1,8 +1,9 @@
 # Serving Plex Right: nginx proxy, TCP tuning, and A/B results
 
-nginx reverse proxy configuration for Plex, with A/B test results comparing a
-baseline config against the tuned setup documented here. The tuned config
-delivers 36ms faster UI loads on WAN and cuts thumbnail load time by 37ms.
+This guide covers using nginx as a reverse proxy for Plex, with A/B test
+results comparing a baseline config against the tuned setup documented here.
+The tuned config delivers 36ms faster UI loads on WAN and cuts thumbnail
+load time by 37ms.
 
 Tested with nginx 1.30 on Debian/Ubuntu. LAN clients: smart TVs, streaming
 sticks, Chrome on Windows. WAN tested from an OVH VPS at ~35ms RTT.
