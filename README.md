@@ -390,7 +390,7 @@ Key choices and why they matter for direct play:
 
 - **`x265_10bit`** — HEVC 10-bit. Widely supported by hardware decoders on modern devices. 10-bit reduces banding on gradients with no extra storage cost at typical quality settings.
 - **`-q 23`** — RF 23 quality. Good balance of size and quality for 1080p; well within the bitrate range all direct-play clients handle comfortably.
-- **`ac3 640kbps 5.1`** — AC3 (Dolby Digital) at 640kbps. AC3 is the most compatible surround codec across Plex clients. Virtually every TV, streaming stick, and AV receiver passes it through without transcoding.
+- **`ac3 640 kbps 5.1`** — AC3 (Dolby Digital) at 640 kbps. AC3 is the most compatible surround codec across Plex clients. Virtually every TV, streaming stick, and AV receiver passes it through without transcoding.
 - **`--first-audio --audio-lang-list eng,und`** — keeps only the first English or undefined-language track. Drops unwanted tracks, keeps file size predictable, and ensures a single known-good stream is always selected.
 - **`-X 1920 -Y 1080`** — caps output at 1080p. Keeps file sizes predictable and ensures hardware decoders that max out at 1080p don't fall back to software decode.
 - **`--crop 0:0:0:0`** — explicit no-crop. Prevents HandBrake's auto-detect from cropping incorrectly on sources with inconsistent black bars.
