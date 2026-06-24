@@ -433,11 +433,13 @@ Everything else — container, audio, resolution, crop, anamorphic — is identi
 | Plex HTPC | ✓ | ✓ |
 | Infuse | ✓ | ✓ |
 
-If your primary clients are all in the "✓" column, `proxy_buffering off` on the
-streaming path and the TCP socket buffer tuning in this guide are what matter
-most. If you have transcoding clients, hardware transcoding (Intel QSV, NVIDIA
-NVENC, Apple VideoToolbox) on the Plex server becomes the dominant factor —
-nginx tuning is secondary.
+**All direct-play:** `proxy_buffering off` on the streaming path and the TCP
+socket buffer tuning in this guide are what matter most — nginx's job is to
+stay out of the way.
+
+**Mixed or transcoding clients:** hardware transcoding (Intel QSV, NVIDIA NVENC,
+Apple VideoToolbox) on the Plex server becomes the dominant factor. nginx tuning
+is secondary to having adequate GPU capacity on the server.
 
 ---
 
@@ -499,9 +501,9 @@ Back up the database directory first — the tool is safe but a backup costs not
 
 ## A/B test results
 
-Two configs compared: a baseline single-location config vs the four-location
-tuned config from this guide. Tested from both a LAN client and a WAN VPS
-(~35ms RTT) against nginx 1.30.
+Baseline: a minimal single-location config. Tuned: the four-location config
+from this guide. Tested from a LAN client and a WAN VPS (~35ms RTT) against
+nginx 1.30.
 
 ### Measurement method
 
