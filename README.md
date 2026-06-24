@@ -1,4 +1,4 @@
-# Plex nginx Performance Tuning
+# Serving Plex Right: nginx proxy, TCP tuning, and A/B results
 
 nginx reverse proxy configuration for Plex, with A/B test results comparing a
 baseline config against the tuned setup documented here. The tuned config
