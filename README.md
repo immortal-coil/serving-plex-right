@@ -5,7 +5,7 @@ tuning for fast UI loading and zero-buffer direct-play streaming. Covers nginx
 config, OS TCP settings, and Plex network settings.
 
 Tested with nginx 1.30, Plex on Debian/Ubuntu, clients on a LAN (smart TVs,
-streaming sticks). Direct-play HEVC/AC3 library — no transcoding.
+streaming sticks, Chrome on Windows). Direct-play HEVC/AC3 library — no transcoding.
 
 ---
 
@@ -330,6 +330,63 @@ curl -sI 'https://plex.example.com/photo/:/transcode?url=...&X-Plex-Token=DIFFER
 # TTFB measurement (run from a LAN client)
 curl -w "TTFB: %{time_starttransfer}s\n" -o /dev/null -s https://plex.example.com/web/index.html
 ```
+
+---
+
+## Direct Play vs Transcode
+
+Whether Plex streams a file directly or transcodes it depends entirely on what
+the **client** can decode, not the library encoding. The Plex dashboard
+(Settings → Troubleshooting → Dashboard) shows "Direct Play", "Direct Stream",
+or "Transcode" for every active session — always verify there rather than
+assuming.
+
+**Direct Play** means Plex sends the file bytes to the client unmodified. The
+client decodes everything locally. This is the ideal path — zero CPU on the
+server, no quality loss, lowest possible latency to first frame.
+
+**Direct Stream** means the container or audio track is remuxed but video is
+not re-encoded. Lower CPU than a full transcode.
+
+**Transcode** means Plex is re-encoding video and/or audio in real time.
+Server CPU (or GPU) is the bottleneck; nginx's job is just to pass the
+HLS segments through.
+
+### Chrome and HEVC/AC3
+
+The common assumption that browsers always transcode HEVC is outdated.
+Chrome on Windows supports hardware HEVC decoding as of Chrome 107+, provided:
+
+- The GPU supports HEVC hardware decode (most modern Intel, AMD, and NVIDIA GPUs do)
+- Windows has the **HEVC Video Extensions** installed (free from the Microsoft Store, or included with some GPU drivers)
+
+With those in place, Chrome direct plays HEVC to the Plex web client. AC3
+audio can also pass through in some configurations. Confirm in the Plex
+dashboard — if it shows Direct Play, no transcoding is happening regardless
+of the browser.
+
+Chrome on Linux and macOS has more limited HEVC support — those clients are
+more likely to trigger a transcode. Check the dashboard rather than assuming.
+
+### Clients that reliably direct play HEVC/AC3
+
+| Client | HEVC | AC3 |
+|---|---|---|
+| Plex for Android TV (Shield, Google TV) | ✓ | ✓ |
+| Plex for Roku | ✓ | ✓ |
+| Plex for Apple TV | ✓ | ✓ |
+| Plex for iOS / tvOS | ✓ | ✓ |
+| Chrome on Windows (with HEVC extensions) | ✓ | depends on config |
+| Chrome on Linux / macOS | ✗ (usually transcodes) | ✗ |
+| Firefox | ✗ | ✗ |
+| Plex HTPC | ✓ | ✓ |
+| Infuse | ✓ | ✓ |
+
+If your primary clients are all in the "✓" column, `proxy_buffering off` on the
+streaming path and the TCP socket buffer tuning in this guide are what matter
+most. If you have transcoding clients, hardware transcoding (Intel QSV, NVIDIA
+NVENC, Apple VideoToolbox) on the Plex server becomes the dominant factor —
+nginx tuning is secondary.
 
 ---
 
