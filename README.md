@@ -394,6 +394,26 @@ Key choices and why they matter for direct play:
 
 This profile produces files that direct play on every client in the table below.
 
+#### NVENC variant
+
+For faster encodes on a machine with an NVIDIA GPU, swap the encoder and quality value:
+
+```
+-e nvenc_h265_10bit -q 27 --encoder-preset slow
+-E ac3 -B 640 -6 5point1 -R Auto
+--audio-lang-list eng,und --first-audio
+-X 1920 -Y 1080 --auto-anamorphic --keep-display-aspect
+--crop 0:0:0:0 --format av_mkv --align-av
+--encopts "bframes=3"
+```
+
+The only differences from the software profile:
+
+- **`nvenc_h265_10bit`** — uses NVIDIA's hardware H.265 encoder instead of x265. Encodes 5–10× faster at the cost of slightly larger files at the same perceptual quality.
+- **`-q 27`** — NVENC's quality scale is not the same as x265's RF. RF 27 on NVENC produces roughly equivalent visual quality to RF 23 on x265; using RF 23 with NVENC would result in unnecessarily large files.
+
+Everything else — container, audio, resolution, crop, anamorphic — is identical. Output files are indistinguishable to Plex clients and direct play the same way.
+
 ### Clients that reliably direct play HEVC/AC3
 
 | Client | HEVC | AC3 |
