@@ -249,9 +249,11 @@ headers are intentional.
 
 ---
 
-## OS TCP tuning
+## TCP tuning
 
 These kernel settings improve streaming behavior. Apply on the machine running nginx/Plex.
+
+BBR (Bottleneck Bandwidth and Round-trip propagation time) is a congestion control algorithm developed by Google. Unlike older algorithms that back off when they detect packet loss, BBR models the network path to keep throughput high. On WAN paths it delivers noticeably better sustained bitrates, which matters for remote Plex clients.
 
 If your Plex host is a **Proxmox LXC container**: `net.ipv4.*` settings must be
 applied inside the container (they're per network namespace). `net.core.*` and
