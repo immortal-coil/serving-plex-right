@@ -158,7 +158,7 @@ server {
         proxy_cache_use_stale         error timeout updating;
         proxy_cache_background_update on;
         proxy_cache_lock              on;
-        proxy_cache_key               "$host$uri";         # strip X-Plex-Token from key
+        proxy_cache_key               "$host$uri$arg_url$arg_width$arg_height"; # strip X-Plex-Token, keep image identity
         proxy_ignore_headers          Cache-Control Expires; # Plex sends no-cache; override it
         add_header X-Cache-Status     $upstream_cache_status always;
     }
@@ -213,16 +213,22 @@ gzip_types
 
 Two directives in the `/photo/:/` location are non-obvious:
 
-**`proxy_cache_key "$host$uri"`**
+**`proxy_cache_key "$host$uri$arg_url$arg_width$arg_height"`**
 
 Plex appends `X-Plex-Token` as a query parameter on thumbnail requests:
-`/photo/:/transcode?url=...&X-Plex-Token=abc123`
+`/photo/:/transcode?url=...&width=150&height=225&X-Plex-Token=abc123`
 
-nginx's default cache key includes `$request_uri`, which includes the full query
-string. Each device has a different token, so each device gets its own cache entry
-for the same poster art — they never share. Setting the key to `"$host$uri"`
-(just the path, no query string) means every device hits the same cache entry for
-the same image.
+nginx's default cache key includes `$request_uri` (the full query string). Each
+device has a different token, so each device gets its own cache entry for the
+same poster art — they never share.
+
+The fix is to build the key from only the parameters that identify the image:
+`$arg_url`, `$arg_width`, `$arg_height`. This excludes the token while keeping
+the parts that distinguish one image from another.
+
+Do not use `"$host$uri"` alone (path only, no query string) — all thumbnail
+requests share the same path `/photo/:/transcode`, so that key would collapse
+every image to a single cache entry and serve one image for everything.
 
 **`proxy_ignore_headers Cache-Control Expires`**
 
