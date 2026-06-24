@@ -390,6 +390,134 @@ nginx tuning is secondary.
 
 ---
 
+## Storage
+
+nginx and TCP tuning have a ceiling: once you're at the TLS handshake floor
+(~12ms on a local gigabit network), there's nothing left for nginx to optimize.
+The next layer down is storage — and it's often the bigger bottleneck.
+
+### NVMe for Plex metadata
+
+Plex's metadata lives in a SQLite database. Every library browse, search, and
+poster load issues multiple queries against it. On spinning disk or even SATA
+SSD, this database becomes the bottleneck well before nginx does.
+
+**Put the Plex metadata directory on NVMe.** The default locations:
+
+| Platform | Metadata path |
+|---|---|
+| Linux | `/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/` |
+| macOS | `~/Library/Application Support/Plex Media Server/` |
+| Windows | `%LOCALAPPDATA%\Plex Media Server\` |
+| Docker | wherever you mount `/config` |
+
+The metadata directory contains the SQLite DB (`com.plexapp.plugins.library.db`),
+thumbnails Plex generates itself, and episode/movie bundles. It does not need to
+be on the same drive as your media — and for performance, it shouldn't be.
+
+If you can't move the whole directory, symlinking `Plug-in Support/Databases/`
+to NVMe gets the highest-impact subset (the SQLite DB files).
+
+Media files themselves do not need NVMe — sequential read from spinning disk or
+NAS is fine for direct play, since the bottleneck there is network, not seek time.
+
+### PlexDBRepair
+
+Plex's SQLite database accumulates fragmentation and bloat over time. Query
+times degrade gradually — you won't notice until browsing feels sluggish.
+[PlexDBRepair](https://github.com/ChuckPa/PlexDBRepair) is a free tool that
+vacuums, reindexes, and repairs the database without touching your library data.
+
+```bash
+# Stop Plex first — never run against a live database
+sudo systemctl stop plexmediaserver
+
+# Download and run
+wget https://github.com/ChuckPa/PlexDBRepair/releases/latest/download/DBRepair.sh
+chmod +x DBRepair.sh
+sudo ./DBRepair.sh
+
+# Restart when done
+sudo systemctl start plexmediaserver
+```
+
+Run quarterly, or whenever you notice library browse performance degrading.
+Back up the database directory first — the tool is safe but a backup costs nothing.
+
+---
+
+## A/B test results
+
+Measured from a LAN client (Debian 13) against nginx 1.30 on the same LAN
+segment. Two configs compared: a baseline single-location config vs the
+four-location tuned config from this guide.
+
+### Measurement method
+
+```bash
+curl -w "connect:%{time_connect}s tls:%{time_appconnect}s ttfb:%{time_starttransfer}s total:%{time_total}s\n" \
+     -s -o /dev/null https://plex.example.com/web/index.html
+```
+
+### UI and API — no measurable difference
+
+| Endpoint | Baseline avg TTFB | Tuned avg TTFB |
+|---|---|---|
+| `/web/index.html` | 13.8ms | 13.7ms |
+| `/library/sections` | 14.1ms | 14.1ms |
+
+TLS handshake (~12.5ms) completely dominates. Plex itself responds in under 1ms.
+Neither config can improve on this — it's the physics floor for HTTPS on a LAN.
+If you need sub-10ms UI response times, the only path is HTTP (no TLS), which is
+not worth the tradeoff.
+
+### Thumbnails — large difference
+
+| Request | Tuned config | Baseline config |
+|---|---|---|
+| First load (cold cache) | 53ms | 67ms |
+| Second request, same image | **13ms (nginx cache HIT)** | 43ms (Plex internal cache) |
+| Third request, same image | **13ms (nginx cache HIT)** | 47ms (Plex internal cache) |
+
+The baseline has no nginx caching. Plex has its own internal image cache so
+repeated requests improve slightly, but every request still round-trips to Plex.
+With the tuned config, after the first load nginx serves the image directly at
+TLS-floor speed.
+
+**At library scale:** opening a 50-movie library loads ~50 thumbnails. Baseline
+takes ~2.5 seconds of thumbnail load time on warm Plex cache; tuned config takes
+~650ms after the first visit.
+
+### What the tuning changes did not affect
+
+- UI and API TTFB — identical between configs, both floored by TLS
+- Streaming start time — direct play TTFB is dominated by Plex's seek-and-respond
+  time, not nginx config
+- WebSocket reliability — works correctly in both configs
+
+### What the baseline config had wrong
+
+Beyond the missing cache, the baseline had two structural issues:
+
+**File extension media matching.** The baseline matched streaming paths via
+`location ~* \.(mp4|mkv|avi|...)$`. Plex streams video at paths like
+`/library/parts/12345/1/file.mkv` — these do end in a file extension, so the
+match technically works, but only for known extensions. HLS segments, DASH
+manifests, and format variants that Plex uses don't match, and the location
+silently falls through to the catch-all. The tuned config uses
+`location ~ ^/(library/parts|video)/` which matches all Plex streaming paths
+regardless of extension.
+
+**`proxy_set_header` in each location block.** The baseline defined all headers
+inside each location block. nginx's inheritance rule means any location that
+defines `proxy_set_header` replaces *all* parent-level headers — not just the
+ones it explicitly sets. The baseline happens to work because both locations
+define the same header set, but it's fragile: adding a location without the
+full header set would silently drop headers for requests going to that location.
+The tuned config keeps all headers at the server block level.
+
+---
+
 ## Common gotchas
 
 **`proxy_set_header` in a location block kills parent headers**
