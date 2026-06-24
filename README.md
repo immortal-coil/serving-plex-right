@@ -368,6 +368,32 @@ of the browser.
 Chrome on Linux and macOS has more limited HEVC support — those clients are
 more likely to trigger a transcode. Check the dashboard rather than assuming.
 
+### Library encoding profile
+
+Files in this library are encoded with HandBrake using the following settings:
+
+```
+-e x265_10bit -q 23 --encoder-preset slow
+-E ac3 -B 640 -6 5point1 -R Auto
+--audio-lang-list eng,und --first-audio
+-X 1920 -Y 1080 --auto-anamorphic --keep-display-aspect
+--crop 0:0:0:0 --format av_mkv --align-av
+--encopts "bframes=3"
+```
+
+Key choices and why they matter for direct play:
+
+- **`x265_10bit`** — HEVC 10-bit. Widely supported by hardware decoders on modern devices. 10-bit reduces banding on gradients with no extra storage cost at typical quality settings.
+- **`-q 23`** — RF 23 quality. Good balance of size and quality for 1080p; well within the bitrate range all direct-play clients handle comfortably.
+- **`ac3 640kbps 5.1`** — AC3 (Dolby Digital) at 640kbps. AC3 is the most compatible surround codec across Plex clients. Virtually every TV, streaming stick, and AV receiver passes it through without transcoding.
+- **`--first-audio --audio-lang-list eng,und`** — keeps only the first English or undefined-language track. Avoids multi-track files that confuse some clients into transcoding to pick a different stream.
+- **`-X 1920 -Y 1080`** — caps output at 1080p. Keeps file sizes predictable and ensures hardware decoders that max out at 1080p don't fall back to software decode.
+- **`--crop 0:0:0:0`** — explicit no-crop. Prevents HandBrake's auto-detect from cropping incorrectly on sources with inconsistent black bars.
+- **`--format av_mkv`** — MKV container. Handles any codec combination, supports chapters and subtitle tracks, and is universally supported by Plex.
+- **`--encopts "bframes=3"`** — 3 B-frames. Improves x265 compression efficiency without noticeably increasing decode complexity for hardware decoders.
+
+This profile produces files that direct play on every client in the table below.
+
 ### Clients that reliably direct play HEVC/AC3
 
 | Client | HEVC | AC3 |
