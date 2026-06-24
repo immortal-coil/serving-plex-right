@@ -7,6 +7,11 @@ config, OS TCP settings, and Plex network settings.
 Tested with nginx 1.30, Plex on Debian/Ubuntu, clients on a LAN (smart TVs,
 streaming sticks, Chrome on Windows). Direct-play HEVC/AC3 library — no transcoding.
 
+> **Disclaimer:** This is a reference guide documenting one homelab configuration.
+> It is provided for educational purposes only — not as hardened production advice.
+> Test any changes in your own environment before deploying. No warranty is implied.
+> This project is not affiliated with, endorsed by, or sponsored by Plex Inc.
+
 ---
 
 ## Why a reverse proxy in front of Plex?
