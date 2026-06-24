@@ -448,9 +448,9 @@ Back up the database directory first — the tool is safe but a backup costs not
 
 ## A/B test results
 
-Measured from a LAN client (Debian 13) against nginx 1.30 on the same LAN
-segment. Two configs compared: a baseline single-location config vs the
-four-location tuned config from this guide.
+Two configs compared: a baseline single-location config vs the four-location
+tuned config from this guide. Tested from both a LAN client and a WAN VPS
+(~35ms RTT) against nginx 1.30.
 
 ### Measurement method
 
@@ -459,52 +459,81 @@ curl -w "connect:%{time_connect}s tls:%{time_appconnect}s ttfb:%{time_starttrans
      -s -o /dev/null https://plex.example.com/web/index.html
 ```
 
-### UI and API — no measurable difference
+### A note on LAN testing
 
-| Endpoint | Baseline avg TTFB | Tuned avg TTFB |
+LAN results are useful for isolating specific behaviours (cache hit/miss timing,
+TLS session resumption) but are not a representative measure of the tuning's
+real-world value. On a LAN, clients can reach Plex directly over HTTP on
+port 32400, bypassing nginx and TLS entirely — 0.3ms vs 13ms. The 13ms TLS
+floor that dominates every LAN measurement is an unavoidable constant, not
+something the nginx config can affect. **WAN results are the meaningful
+comparison** because transfer time and congestion control matter, gzip savings
+are real, and there's no HTTP shortcut available.
+
+### LAN results (same gigabit segment, ~0.2ms RTT)
+
+#### UI and API — no measurable difference on LAN
+
+| Endpoint | Baseline TTFB | Tuned TTFB |
 |---|---|---|
 | `/web/index.html` | 13.8ms | 13.7ms |
 | `/library/sections` | 14.1ms | 14.1ms |
 
-TLS handshake (~12.5ms) completely dominates. Plex itself responds in under 1ms.
-Neither config can improve on this — it's the physics floor for HTTPS on a LAN.
-If you need sub-10ms UI response times, the only path is HTTP (no TLS), which is
-not worth the tradeoff.
+TLS handshake (~12.5ms) dominates. Plex itself responds in under 1ms. Neither
+config can improve on this floor, and gzip savings are invisible because gigabit
+absorbs the extra uncompressed bytes in microseconds.
 
-### Thumbnails — large difference
+#### Thumbnails — large difference even on LAN
 
-| Request | Tuned config | Baseline config |
+| Request | Tuned | Baseline |
 |---|---|---|
-| First load (cold cache) | 53ms | 67ms |
-| Second request, same image | **13ms (nginx cache HIT)** | 43ms (Plex internal cache) |
-| Third request, same image | **13ms (nginx cache HIT)** | 47ms (Plex internal cache) |
+| First load (cold) | 53ms (MISS) | 67ms (MISS) |
+| Second request | **13ms (HIT)** | 43ms (Plex internal cache) |
+| Third request | **13ms (HIT)** | 47ms (Plex internal cache) |
 
-The baseline has no nginx caching. Plex has its own internal image cache so
-repeated requests improve slightly, but every request still round-trips to Plex.
-With the tuned config, after the first load nginx serves the image directly at
-TLS-floor speed.
+Thumbnail caching is visible even on LAN. The baseline round-trips to Plex on
+every request; the tuned config serves from nginx at TLS-floor speed after the
+first load. At library scale (50 movies): ~650ms vs ~2.5 seconds of thumbnail
+load time.
 
-**At library scale:** opening a 50-movie library loads ~50 thumbnails. Baseline
-takes ~2.5 seconds of thumbnail load time on warm Plex cache; tuned config takes
-~650ms after the first visit.
+### WAN results (OVH VPS, ~35ms RTT) — tuned config wins clearly
+
+| Endpoint | Baseline TTFB | Tuned TTFB | Delta |
+|---|---|---|---|
+| `/web/index.html` | 189ms | **153ms** | **−36ms** |
+| `/library/sections` | 153ms | 153ms | 0ms |
+| Thumbnail MISS | 189ms | 201ms | +12ms (Plex fetch) |
+| Thumbnail HIT | 189ms | **152ms** | **−37ms** |
+
+**UI is 36ms faster** due to gzip. The baseline sends uncompressed JS, CSS, and
+JSON. Over a 35ms WAN path the extra bytes add measurable transfer time; on LAN
+gigabit makes it invisible.
+
+**Thumbnail HITs are 37ms faster** — nginx cache serves at the TLS floor
+(152ms) while the baseline always round-trips to Plex (189ms).
+
+**Thumbnail MISSes are 12ms slower** on the first request — this is the cost
+of nginx fetching and caching the image. It's a one-time penalty per image per
+cache warm cycle; every subsequent request saves 37ms.
+
+**API is identical** — the JSON payload is small enough that gzip savings don't
+affect TTFB regardless of path.
 
 ### What the tuning changes did not affect
 
-- UI and API TTFB — identical between configs, both floored by TLS
-- Streaming start time — direct play TTFB is dominated by Plex's seek-and-respond
-  time, not nginx config
+- Streaming start time — dominated by Plex's seek-and-respond time, not nginx
 - WebSocket reliability — works correctly in both configs
+- API TTFB — response payloads too small for gzip to matter
 
 ### What the baseline config had wrong
 
-Beyond the missing cache, the baseline had two structural issues:
+Beyond missing gzip and caching, the baseline had two structural issues:
 
 **File extension media matching.** The baseline matched streaming paths via
 `location ~* \.(mp4|mkv|avi|...)$`. Plex streams video at paths like
-`/library/parts/12345/1/file.mkv` — these do end in a file extension, so the
-match technically works, but only for known extensions. HLS segments, DASH
-manifests, and format variants that Plex uses don't match, and the location
-silently falls through to the catch-all. The tuned config uses
+`/library/parts/12345/1/file.mkv` — these do end in a file extension so the
+match technically works, but only for known extensions. The location silently
+falls through to the catch-all for anything else. The tuned config uses
 `location ~ ^/(library/parts|video)/` which matches all Plex streaming paths
 regardless of extension.
 
@@ -513,8 +542,8 @@ inside each location block. nginx's inheritance rule means any location that
 defines `proxy_set_header` replaces *all* parent-level headers — not just the
 ones it explicitly sets. The baseline happens to work because both locations
 define the same header set, but it's fragile: adding a location without the
-full header set would silently drop headers for requests going to that location.
-The tuned config keeps all headers at the server block level.
+full header set would silently drop headers for that location. The tuned config
+keeps all headers at the server block level.
 
 ---
 
