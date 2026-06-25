@@ -741,6 +741,51 @@ drops parent headers for any location that doesn't repeat them. These don't show
 up in benchmarks but cause subtle breakage in real deployments. The tuned config
 eliminates both.
 
+### Recommendations checklist
+
+The items below have the most impact, roughly in priority order:
+
+- **NVMe for Plex metadata.** Put the entire Plex Library directory on NVMe
+  (database, cache, metadata). Spinning disk or SATA SSD becomes the bottleneck
+  well before nginx does. If you can only move one thing, move
+  `Plug-in Support/Databases/` — that's the SQLite database, and every library
+  browse hits it.
+- **Let the Cache directory be a real directory.** Do not symlink
+  `Cache/` to a tmpfs or `/dev/shm` path that disappears on reboot. Plex
+  stores `cert-v2.p12` and the PhotoTranscoder cache there. A missing Cache
+  directory causes every Plex restart to re-request a cert (triggering
+  rate limiting) and disables thumbnail caching silently.
+- **Run PlexDBRepair quarterly.** The SQLite database accumulates fragmentation
+  over time. [PlexDBRepair](https://github.com/ChuckPa/DBRepair) vacuums and
+  reindexes it without touching library data. Run it when browsing feels sluggish.
+  Always stop Plex first and back up the database directory.
+- **nginx with Let's Encrypt for cert control.** Plex's `*.plex.direct` cert
+  is provisioned by Plex's servers and subject to rate limits. If you hit the
+  limit, you have no working remote access until Plex resets your quota. Your
+  own cert on your own domain has no such dependency.
+- **Standardize media encoding for direct play.** Transcoding is the largest
+  CPU cost on a Plex server and the biggest source of playback quality loss.
+  Encoding to HEVC (x265) + AC3 5.1 at 1080p targets the codec combination
+  that direct plays on every common client (Shield, Roku, Apple TV, Plex HTPC,
+  Infuse, Chrome on Windows). Verify in the Plex dashboard — not by assumption.
+- **Disable Plex relay.** Settings → Remote Access → disable relay. Relay
+  routes connections through Plex's cloud servers when it cannot confirm a
+  direct path. On a properly port-forwarded setup this only adds latency.
+- **LAN subnet auth bypass.** Settings → Network → allowed IPs without auth:
+  add your LAN subnet. This skips per-request token validation for local
+  clients and is the most visible TTFB improvement for LAN API calls.
+- **BBR congestion control on the host.** Set `net.ipv4.tcp_congestion_control
+  = bbr` and `net.core.default_qdisc = fq` on the machine running Plex (or
+  on the Proxmox host if Plex is in an LXC container). BBR maintains throughput
+  on WAN paths where packet loss would cause older algorithms to back off.
+- **`proxy_buffering off` on streaming paths.** nginx must not buffer video
+  chunks. The tuned config sets this at the server level and explicitly
+  overrides it only for the thumbnail cache location.
+- **Thumbnail cache key excludes the token.** The default nginx cache key
+  includes the full query string — including `X-Plex-Token`. Every device gets
+  its own cache entry for the same poster. The fix (`$host$uri$arg_url
+  $arg_width$arg_height`) shares entries across devices for the same image.
+
 ---
 
 Built with the assistance of [Claude Code](https://claude.ai/code).
