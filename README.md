@@ -1,9 +1,12 @@
 # Serving Plex Right: nginx proxy, TCP tuning, and A/B results
 
 This guide covers using nginx as a reverse proxy for Plex, with A/B test
-results comparing a baseline config against the tuned setup documented here.
-The tuned config delivers 36ms faster UI loads on WAN and cuts thumbnail
-load time by 37ms.
+results comparing a baseline nginx config, a tuned nginx config, and Plex's
+own built-in HTTPS (plex.direct). The primary value of nginx for Plex is cert
+independence: your own Let's Encrypt cert, your domain, and no dependency on
+Plex's rate-limited certificate infrastructure. The performance delta over
+Plex's native HTTPS is modest — both gzip their responses, and in 20-run WAN
+averages the two are within 1ms of each other on TTFB and ~5ms on total time.
 
 Tested with nginx 1.30 on Debian/Ubuntu. LAN clients: smart TVs, streaming
 sticks, Chrome on Windows. WAN tested from an OVH VPS at ~35ms RTT.
@@ -26,13 +29,18 @@ Plex already has its own HTTP server, so why add nginx?
   provisioned by Plex's servers and subject to their rate limits and outages.
   With nginx you own the cert, the renewal cycle, and the domain. If Plex's cert
   infrastructure has problems, your setup is unaffected.
-- **HTTP/2:** nginx speaks HTTP/2 to clients, which multiplexes the ~20 parallel
-  requests a Plex page load fires (posters, metadata, assets). Plex's own server
-  uses HTTP/1.1.
-- **Thumbnail caching:** nginx can cache poster and artwork responses so repeated
-  requests (opening a library, scrolling) skip the round-trip to Plex entirely.
-- **Compression:** nginx gzips JSON and web assets before they leave the server.
-  Plex's built-in compression is less controllable.
+- **HTTP/2:** nginx speaks HTTP/2 to clients. Plex's own server uses HTTP/1.1.
+  In practice the benefit is minimal — curl parallel tests show Plex's HTTP/1.1
+  with multiple connections is competitive with nginx's HTTP/2 multiplexing at
+  typical homelab scales.
+- **Thumbnail caching:** nginx can cache poster and artwork responses in RAM. On
+  LAN this adds nothing — Plex's PhotoTranscoder cache is fast enough. Over WAN
+  the nginx cache and Plex direct are within a few ms of each other in parallel
+  load tests.
+- **Compression:** nginx gzips JSON and web assets with configurable levels and
+  MIME-type filtering. Plex's own server also gzips responses — so this is not
+  a unique nginx advantage. The benefit is control: which types, at what level,
+  and without depending on Plex's behavior.
 - **Streaming control:** `proxy_buffering off` on media paths means nginx passes
   video chunks straight through to the client instead of accumulating them first,
   eliminating nginx-induced buffering stalls.
@@ -541,74 +549,96 @@ are real, and there's no HTTP shortcut available.
 
 | Endpoint | Baseline TTFB | Tuned TTFB |
 |---|---|---|
-| `/web/index.html` | 13.8ms | 13.7ms |
-| `/library/sections` | 14.1ms | 14.1ms |
+| `/web/index.html` | 11ms | 10ms |
+| `/library/sections` | 11ms | 11ms |
 
-Plex's own response latency (~13ms) sets the floor. TLS on a 0.2ms LAN adds
-under 1ms and is not the bottleneck. Neither config can move this floor, and
-gzip savings are invisible because gigabit absorbs the extra uncompressed bytes
-in microseconds.
+Plex's own response latency sets the floor. TLS on a 0.2ms LAN adds under 1ms
+and is not the bottleneck. Neither config can move this floor, and gzip savings
+are invisible because gigabit absorbs the extra uncompressed bytes in
+microseconds.
 
-#### Thumbnails: large difference even on LAN
+#### Thumbnails: negligible difference on LAN
 
 | Request | Baseline | Tuned |
 |---|---|---|
-| First load (cold) | 67ms (MISS) | 53ms (MISS) |
-| Second request | 43ms (Plex internal cache) | **13ms (HIT)** |
-| Third request | 47ms (Plex internal cache) | **13ms (HIT)** |
+| First load (cold) | 10ms | 11ms (MISS) |
+| Second request | 11ms (PhotoTranscoder cache) | **10ms (HIT)** |
+| Third request | 11ms (PhotoTranscoder cache) | **9ms (HIT)** |
 
-Thumbnail caching is visible even on LAN. The baseline round-trips to Plex on
-every request; the tuned config serves from nginx at TLS-floor speed after the
-first load. At library scale (50 movies): ~650ms vs ~2,500ms of thumbnail
-load time.
+With Plex's PhotoTranscoder cache working, the baseline serves warm thumbnails
+nearly as fast as nginx's cache on LAN. Both configs land within 1–2ms of each
+other. The nginx cache benefit is a WAN story, not a LAN one.
 
-### WAN results (OVH VPS, ~35ms RTT): tuned config wins clearly
+### WAN results (OVH VPS, ~35ms RTT)
 
-| Endpoint | Baseline TTFB | Tuned TTFB | Delta |
-|---|---|---|---|
-| `/web/index.html` | 189ms | **153ms** | **−36ms** |
-| `/library/sections` | 153ms | 153ms | 0ms |
-| Thumbnail MISS | 189ms | 201ms | +12ms (Plex fetch) |
-| Thumbnail HIT | 189ms | **152ms** | **−37ms** |
+Steady-state numbers (warm TCP connection, TLS session resumed), 20-run averages.
+Both TTFB (`time_starttransfer`) and total time (`time_total`) shown:
 
-**UI is 36ms faster** due to gzip. The baseline sends uncompressed JS, CSS, and
-JSON. Over a 35ms WAN path the extra bytes add measurable transfer time; on LAN
-gigabit makes it invisible.
+| Endpoint | Direct HTTP | plex.direct HTTPS | Baseline nginx | Tuned nginx |
+|---|---|---|---|---|
+| `/web/index.html` TTFB | 70ms | 107ms | 142ms | **108ms** |
+| `/web/index.html` Total | 112ms | 147ms | 143ms | **142ms** |
+| `/library/sections` TTFB | 73ms | 109ms | 110ms | **108ms** |
+| `/library/sections` Total | 73ms | 109ms | 110ms | **108ms** |
+| Thumbnail TTFB | 72ms | 108ms | 143ms | **107ms** |
+| Thumbnail Total | 73ms | 113ms | 143ms | 119ms |
 
-**Thumbnail HITs are 37ms faster.** nginx cache serves at the TLS floor
-(152ms) while the baseline always round-trips to Plex (189ms).
+**UI: nginx tuned and plex.direct are statistically tied on TTFB** (108ms vs
+107ms). Total time shows nginx 5ms faster on index.html (142ms vs 147ms). Both
+gzip their responses — the advantage is not from gzip but from nginx's TLS
+session cache reducing handshake overhead.
 
-**Thumbnail MISSes are 12ms slower** on the first request. This is the cost
-of nginx fetching and caching the image. It's a one-time penalty per image per
-cache warm cycle; every subsequent request saves 37ms.
+**Baseline nginx TTFB ≈ total time** on every endpoint. That's the buffering
+artifact: the baseline config's default `proxy_buffering on` causes nginx to
+accumulate the full response before sending the first byte. The tuned config
+sets `proxy_buffering off` to eliminate this.
 
-**API is identical.** The JSON payload is small enough that gzip savings don't
-affect TTFB regardless of path.
+**Thumbnail: plex.direct and nginx tuned are effectively tied** on single
+requests (108ms vs 119ms total). Once Plex's PhotoTranscoder cache is
+functioning, the nginx proxy hop offsets the caching benefit.
+
+**API: all configs are within noise** of each other.
+
+### Parallel thumbnail load test (20 simultaneous requests)
+
+This tests what actually happens when a Plex client opens a library grid. 20
+distinct thumbnails fetched in parallel from the VPS, wall-clock time:
+
+| Config | Run 1 | Run 2 | Run 3 | Avg |
+|---|---|---|---|---|
+| nginx HTTP/2 (cached) | 183ms | 187ms | 180ms | 183ms |
+| plex.direct HTTP/1.1 | 162ms | 149ms | 153ms | **155ms** |
+
+plex.direct wins by ~28ms on parallel loads. HTTP/2 multiplexing over a single
+connection does not overcome the nginx proxy hop at this scale. Plex's HTTP/1.1
+opens parallel connections and finishes first.
 
 ### Direct Plex WAN baseline (HTTP :32400, no nginx, no TLS)
 
-Measured from the same VPS with port 32400 temporarily open:
+Measured from the same VPS with port 32400 temporarily open (20-run averages):
 
 | Endpoint | TTFB | Total |
 |---|---|---|
-| `/web/index.html` | ~74ms | ~119ms |
-| `/library/sections` | ~75ms | ~75ms |
-| Thumbnail | ~103ms | ~103ms |
+| `/web/index.html` | 70ms | 112ms |
+| `/library/sections` | 73ms | 73ms |
+| Thumbnail | 72ms | 73ms |
 
 This is the theoretical floor: no proxy overhead, no TLS, same network path.
 
-**nginx+HTTPS TTFB (153ms) vs direct HTTP TTFB (~74ms):** the ~79ms gap splits
-between the TLS 1.3 handshake (~35ms, one RTT) and the nginx-to-Plex proxy hop
-(~44ms). Gzip recovers ~36ms of that transfer time. The net premium for
-nginx+HTTPS over raw HTTP is roughly one extra round-trip, and you get
-encryption, caching, and compression for it.
+**nginx+HTTPS TTFB (108ms) vs direct HTTP TTFB (70ms):** the ~38ms gap is
+almost entirely the TLS 1.3 handshake (~35ms, one RTT). The proxy hop itself
+adds negligible overhead.
 
-**Thumbnails via nginx HIT (152ms) vs direct HTTP (103ms):** the ~49ms
-difference is TLS cost. You're paying for encryption, not proxy overhead.
+**plex.direct HTTPS (107ms) vs direct HTTP (70ms):** the same ~37ms gap —
+pure TLS cost. Both nginx and plex.direct gzip their responses; neither has a
+compression advantage over the other.
+
+**Thumbnails:** all three HTTPS options (nginx 119ms, plex.direct 113ms, HTTP
+73ms) are within a few ms of each other. TLS is the dominant cost; the
+proxy hop and caching effects are in the noise.
 
 **The takeaway:** nginx is not adding meaningful latency beyond TLS. If you're
-serving over HTTPS (which you should be), the proxy overhead is negligible and
-the gzip and caching gains offset most of the TLS cost.
+serving over HTTPS (which you should be), the proxy overhead is negligible.
 
 ### What the tuning changes did not affect
 
@@ -668,24 +698,35 @@ so Let's Encrypt HTTP-01 challenge can complete.
 
 ## Conclusions
 
-The A/B results tell a clear story about where nginx actually moves the needle.
+After testing baseline nginx, tuned nginx, plex.direct HTTPS, and direct HTTP
+across LAN and WAN with sequential and parallel workloads, the results are
+clearer than the initial numbers suggested.
 
-**Gzip is the biggest win on WAN.** The 36ms improvement on `/web/index.html`
-comes entirely from compressing the JS, CSS, and JSON that the Plex UI loads on
-every page. The baseline sent those uncompressed; the tuned config does not.
-On LAN, gigabit swallows the difference and you won't see it. On WAN, it's the
-largest single gain in the test.
+**The real reason to use nginx is cert control, not performance.** Plex's
+`*.plex.direct` cert is provisioned by Plex's servers, subject to rate limits,
+and can leave you with no working remote access while you wait for a reset.
+nginx with Let's Encrypt gives you your own cert, your own domain, and no
+dependency on Plex's infrastructure.
 
-**Thumbnail caching compounds over time.** A single thumbnail miss costs 12ms
-more through nginx than going direct to Plex. But every subsequent hit saves
-37ms. At library scale, opening a 50-movie library goes from ~2,500ms of
-thumbnail load time to ~650ms after the cache is warm. The cache pays for itself
-after the second request per image.
+**nginx and plex.direct HTTPS are effectively tied on performance.** Both gzip
+their responses. In 20-run WAN averages, TTFB is within 1ms; total time for
+`/web/index.html` shows nginx 5ms faster (142ms vs 147ms) — a real but modest
+difference that sits within the noise margin at 35ms RTT. Everything else —
+thumbnails, API, streaming — is within 1–6ms between the two.
 
-**nginx is not the bottleneck.** The ~79ms gap between nginx+HTTPS and raw HTTP
-is almost entirely TLS handshake cost at a 35ms RTT. The proxy itself adds
-negligible latency. If you're already serving over HTTPS, the gzip and caching
-gains recover most of that TLS overhead.
+**HTTP/2 does not show a clear advantage in parallel thumbnail loads.** The
+parallel test (20 simultaneous requests) showed plex.direct at 155ms vs nginx
+at 183ms. Note the confound: `curl --parallel` opens 20 HTTP/1.1 connections
+against plex.direct but one multiplexed HTTP/2 connection against nginx — that
+over-favors plex.direct compared to a browser, which opens ~6 connections.
+The result shows the proxy hop overhead is real; the HTTP/2 vs HTTP/1.1
+question is untested at realistic browser concurrency.
+
+**Thumbnail caching is a wash.** With Plex's PhotoTranscoder cache working,
+single-request TTFB is tied (108ms vs 107ms) and plex.direct is slightly
+faster on total time (113ms vs 119ms). On parallel loads, plex.direct also
+wins. The nginx cache only showed a clear advantage when PhotoTranscoder was
+broken.
 
 **Streaming is unaffected by nginx tuning.** Start times, buffering behavior,
 and playback quality are dominated by Plex's own seek-and-respond time and the
