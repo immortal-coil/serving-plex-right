@@ -26,7 +26,7 @@ Plex already has its own HTTP server, so why add nginx?
 - **HTTPS with a cert you control:** nginx handles TLS termination with a
   Let's Encrypt cert on your own domain. Plex's built-in HTTPS uses a self-signed
   cert that causes browser warnings. Plex's `*.plex.direct` wildcard cert is
-  provisioned by Plex's servers and subject to their rate limits and outages.
+  provisioned by Plex's servers and [may be subject to rate limits](https://forums.plex.tv/t/certificate-stuck-on-429-rate-limit-request-reset/938830) and outages.
   With nginx you own the cert, the renewal cycle, and the domain. If Plex's cert
   infrastructure has problems, your setup is unaffected.
 - **HTTP/2:** nginx speaks HTTP/2 to clients. Plex's own server uses HTTP/1.1.
@@ -703,7 +703,7 @@ across LAN and WAN with sequential and parallel workloads, the results are
 clearer than the initial numbers suggested.
 
 **The real reason to use nginx is cert control, not performance.** Plex's
-`*.plex.direct` cert is provisioned by Plex's servers, subject to rate limits,
+`*.plex.direct` cert is provisioned by Plex's servers, [may be subject to rate limits](https://forums.plex.tv/t/certificate-stuck-on-429-rate-limit-request-reset/938830),
 and can leave you with no working remote access while you wait for a reset.
 nginx with Let's Encrypt gives you your own cert, your own domain, and no
 dependency on Plex's infrastructure.
@@ -763,7 +763,7 @@ The items below have the most impact, roughly in priority order:
   reindexes it without touching library data. Run it when browsing feels sluggish.
   Always stop Plex first and back up the database directory.
 - **nginx with Let's Encrypt for cert control.** Plex's `*.plex.direct` cert
-  is provisioned by Plex's servers and subject to rate limits. If you hit the
+  is provisioned by Plex's servers and [may be subject to rate limits](https://forums.plex.tv/t/certificate-stuck-on-429-rate-limit-request-reset/938830). If you hit the
   limit, you have no working remote access until Plex resets your quota. Your
   own cert on your own domain has no such dependency.
 - **Standardize media encoding for direct play.** Transcoding is the largest
