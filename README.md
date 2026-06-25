@@ -27,7 +27,7 @@ No transcoding.
 - [Topology](#topology)
 - [Prerequisites](#prerequisites)
 - [Benchmark results](#benchmark-results)
-  - [LAN results](#lan-results-same-gigabit-segment-02ms-rtt)
+  - [LAN results](#lan-results)
   - [WAN results — OVH VPS (~35ms RTT)](#wan-results-ovh-vps-35ms-rtt)
   - [WAN results — site-b, residential (~25ms RTT)](#wan-results-site-b-residential-25ms-rtt)
   - [Parallel thumbnail load test](#parallel-thumbnail-load-test-20-simultaneous-requests)
@@ -123,6 +123,7 @@ something the nginx config can affect. **WAN results are the meaningful
 comparison** because transfer time and congestion control matter, gzip savings
 are real, and there's no HTTP shortcut available.
 
+<a id="lan-results"></a>
 ### LAN results (same gigabit segment, ~0.2ms RTT)
 
 #### UI and API: no measurable difference on LAN
