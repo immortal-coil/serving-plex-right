@@ -20,9 +20,12 @@ Direct-play HEVC/AC3 library. No transcoding.
 
 Plex already has its own HTTP server, so why add nginx?
 
-- **HTTPS with a real cert:** nginx handles TLS termination with a Let's Encrypt
-  cert. Plex's built-in HTTPS uses a self-signed cert that causes browser warnings
-  and can't be verified by apps.
+- **HTTPS with a cert you control:** nginx handles TLS termination with a
+  Let's Encrypt cert on your own domain. Plex's built-in HTTPS uses a self-signed
+  cert that causes browser warnings. Plex's `*.plex.direct` wildcard cert is
+  provisioned by Plex's servers and subject to their rate limits and outages.
+  With nginx you own the cert, the renewal cycle, and the domain. If Plex's cert
+  infrastructure has problems, your setup is unaffected.
 - **HTTP/2:** nginx speaks HTTP/2 to clients, which multiplexes the ~20 parallel
   requests a Plex page load fires (posters, metadata, assets). Plex's own server
   uses HTTP/1.1.
@@ -636,33 +639,6 @@ keeps all headers at the server block level.
 ---
 
 ## Common gotchas
-
-**Plex crashes on reboot if its Cache directory is a symlink to tmpfs**
-
-If you've symlinked Plex's Cache directory to `/dev/shm/` for RAM-based caching,
-the target directory is wiped on every reboot. Plex does not recreate it and
-crashes with a `boost::filesystem::create_directories` error instead of starting.
-
-Fix: add `ExecStartPre` to the Plex systemd override so the directory is created
-before Plex starts on every boot.
-
-```bash
-sudo systemctl edit plexmediaserver
-```
-
-Add inside the `[Service]` section:
-
-```ini
-ExecStartPre=/bin/mkdir -p /dev/shm/plex-cache
-```
-
-The ExecStartPre command runs as the same user as the service. Since `/dev/shm`
-is world-writable, no elevated privileges are needed. `mkdir -p` is idempotent.
-Safe to run even if the directory already exists.
-
-Note: `systemd-tmpfiles` is the usual tool for managing tmpfs directories but
-is blocked inside Proxmox LXC containers due to the user namespace path
-transition check. ExecStartPre is the correct workaround in that environment.
 
 **`proxy_set_header` in a location block kills parent headers**
 nginx's inheritance rule: defining any `proxy_set_header` in a child context
