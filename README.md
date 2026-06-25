@@ -19,6 +19,28 @@ Direct-play HEVC/AC3 library. No transcoding.
 
 ---
 
+## Contents
+
+- [Why a reverse proxy in front of Plex?](#why-a-reverse-proxy-in-front-of-plex)
+- [Topology](#topology)
+- [Prerequisites](#prerequisites)
+- [Benchmark results](#benchmark-results)
+  - [LAN results](#lan-results-same-gigabit-segment-02ms-rtt)
+  - [WAN results — OVH VPS (~35ms RTT)](#wan-results-ovh-vps-35ms-rtt)
+  - [WAN results — site-b, residential (~25ms RTT)](#wan-results-site-b-residential-25ms-rtt)
+  - [Parallel thumbnail load test](#parallel-thumbnail-load-test-20-simultaneous-requests)
+  - [Direct Plex WAN baseline](#direct-plex-wan-baseline-http-32400-no-nginx-no-tls)
+- [nginx config](nginx-config.md)
+- [TCP tuning](#tcp-tuning)
+- [Plex settings](#plex-settings)
+- [Verifying the setup](#verifying-the-setup)
+- [Direct Play vs Transcode](#direct-play-vs-transcode)
+- [Storage](#storage)
+- [Common gotchas](#common-gotchas)
+- [Conclusions](#conclusions)
+
+---
+
 ## Why a reverse proxy in front of Plex?
 
 Plex already has its own HTTP server, so why add nginx?
