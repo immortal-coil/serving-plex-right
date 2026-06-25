@@ -1,6 +1,6 @@
-# Serving Plex Right: nginx proxy, TCP tuning, and A/B results
+# Serving Plex Right: nginx proxy, TCP tuning, and benchmark results
 
-This guide covers using nginx as a reverse proxy for Plex, with A/B test
+This guide covers using nginx as a reverse proxy for Plex, with benchmark
 results comparing a baseline nginx config, a tuned nginx config, and Plex's
 own built-in HTTPS (plex.direct). The primary value of nginx for Plex is cert
 independence: your own Let's Encrypt cert, your domain, and no dependency on
@@ -519,7 +519,7 @@ Back up the database directory first. The tool is safe, but a backup costs nothi
 
 ---
 
-## A/B test results
+## Benchmark results
 
 Baseline: a minimal single-location config. Tuned: the four-location config
 from this guide. Tested from a LAN client and a WAN VPS (~35ms RTT) against
@@ -749,7 +749,10 @@ The items below have the most impact, roughly in priority order:
   (database, cache, metadata). Spinning disk or SATA SSD becomes the bottleneck
   well before nginx does. If you can only move one thing, move
   `Plug-in Support/Databases/` — that's the SQLite database, and every library
-  browse hits it.
+  browse hits it. If you're stuck on SATA SSD, the nginx thumbnail cache in this
+  guide may provide measurable relief on library grid loads — it serves warm
+  thumbnails from RAM instead of hitting the disk. That benefit is untested on
+  SATA; results would depend on your library size and read patterns.
 - **Let the Cache directory be a real directory.** Do not symlink
   `Cache/` to a tmpfs or `/dev/shm` path that disappears on reboot. Plex
   stores `cert-v2.p12` and the PhotoTranscoder cache there. A missing Cache
