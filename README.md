@@ -641,6 +641,19 @@ drops parent headers for any location that doesn't repeat them. These don't show
 up in benchmarks but cause subtle breakage in real deployments. The tuned config
 eliminates both.
 
+### Which items apply to me?
+
+Storage and network are independent — pick both rows that match your setup, then
+work through the checklist below. nginx is not a speed upgrade; its value is
+cert control and tail-latency consistency.
+
+| Your situation | Do this |
+|---|---|
+| **LAN only** | nginx adds TLS overhead (~13ms floor vs 0.3ms direct HTTP) with no speed benefit on gigabit LAN. Use it only if you need cert control or URL routing; if so, run HTTP on LAN, not HTTPS (see the LAN vhost in the config). Skip thumbnail cache — Plex's PhotoTranscoder cache is sufficient on LAN. Priority items: NVMe metadata, PlexDBRepair, direct play encoding, LAN auth bypass. |
+| **Remote / WAN** | nginx for cert control (your domain, no plex.direct rate-limit risk) and consistent tail latency (p95 74ms vs 128ms for the UI endpoint). Enable BBR on the host. Enable the thumbnail cache if library grid loads are slow for remote users. |
+| **NVMe storage** | Storage is not your bottleneck. Thumbnail cache adds minimal benefit when Plex's PhotoTranscoder cache is healthy. Focus on direct play encoding, BBR, and the structural config fixes. |
+| **SATA SSD or spinning disk** | Move Plex's metadata directory to NVMe first — highest single-change impact. If you can't, the thumbnail cache _may_ help repeated grid loads: warm cached files land in the OS page cache after the first disk read. This is untested on SATA; the benefit depends on available RAM and library size. Put the cache dir on a fast disk or tmpfs to avoid SATA reads on cold cache misses. |
+
 ### Recommendations checklist
 
 The items below have the most impact, roughly in priority order:
