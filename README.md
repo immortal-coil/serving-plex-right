@@ -4,10 +4,11 @@ This guide covers using nginx as a reverse proxy for Plex, with benchmark
 results comparing a baseline nginx config, a tuned nginx config, and Plex's
 own built-in HTTPS (plex.direct). The primary value of nginx for Plex is cert
 independence: your own Let's Encrypt cert, your domain, and no dependency on
-Plex's rate-limited certificate infrastructure. On median TTFB the two are
-within 1ms of each other, but plex.direct's tail latency is unpredictable:
-cold TLS handshakes route to different Plex PoPs and can spike to 3-8x median.
-nginx terminates TLS locally and is always consistent.
+Plex's rate-limited certificate infrastructure. On median TTFB the two are within a few ms of each other, but plex.direct's
+tail latency is unpredictable: its hostname resolves through Plex's nameservers
+with a short DNS TTL, and cache misses add 60–180ms to TCP connect. TLS
+handshake time is consistent for both (~26ms). nginx uses your own domain's DNS
+with no dependency on Plex's infrastructure.
 
 Tested with nginx 1.30 on Debian/Ubuntu. LAN clients: smart TVs, streaming
 sticks, Chrome on Windows. WAN tested from an OVH VPS (~35ms RTT) and a
@@ -152,8 +153,9 @@ other. The nginx cache benefit is a WAN story, not a LAN one.
 
 ### WAN results (OVH VPS, ~35ms RTT)
 
-Steady-state numbers (warm TCP connection, TLS session resumed), 20-run averages.
-Both TTFB (`time_starttransfer`) and total time (`time_total`) shown:
+20-run averages. Each measurement is an independent `curl` invocation — fresh
+TCP connection, no TLS session resumption. Both TTFB (`time_starttransfer`) and
+total time (`time_total`) shown:
 
 | Endpoint | Direct HTTP | plex.direct HTTPS | Baseline nginx | Tuned nginx |
 |---|---|---|---|---|
@@ -223,37 +225,41 @@ serving over HTTPS (which you should be), the proxy overhead is negligible.
 
 ### WAN results (site-b, residential, ~25ms RTT)
 
-20-run averages from a residential machine 300 miles from the Plex server.
-Port 32400 is not exposed from site-b, so there is no direct HTTP baseline.
-plex.direct and nginx resolve to the same IP — same physical path, different
-TLS termination.
+20 runs, interleaved (nginx and plex.direct alternating each iteration so both
+face the same network conditions). Each measurement is an independent `curl`
+invocation — fresh TCP connection, no TLS session resumption. Port 32400 is not
+exposed from site-b; there is no direct HTTP baseline. Both targets resolve to
+the same IP — same physical path, different server software.
 
-| Endpoint | plex.direct HTTPS | Tuned nginx |
-|---|---|---|
-| `/web/index.html` TTFB | 76ms avg / 63ms median | **63ms avg / 61ms median** |
-| `/web/index.html` Total | 92ms avg / 81ms median | **79ms avg / 78ms median** |
-| `/library/sections` TTFB | 63ms avg | **62ms avg** |
-| Thumbnail TTFB (warm cache) | 66ms avg | **66ms avg** |
-| Thumbnail Total (warm cache) | 81ms avg | **77ms avg** |
+| Endpoint | plex.direct median | plex.direct p95 | nginx median | nginx p95 |
+|---|---|---|---|---|
+| `/web/index.html` TTFB | 60ms | 128ms | **64ms** | **74ms** |
+| `/web/index.html` Total | 78ms | 151ms | **79ms** | **87ms** |
+| `/library/sections` TTFB | 66ms | 216ms | **65ms** | **77ms** |
 
-**plex.direct variance is the headline finding.** nginx TTFB stayed between
-52–77ms across all 20 UI runs. plex.direct ranged from 53–208ms, with three
-runs spiking above 120ms. The spikes are cold TLS handshakes routing to
-different PoPs in Plex's certificate infrastructure — the median is competitive,
-but the worst case is 3× nginx's worst case, and you have no control over which
-PoP you land on.
+**plex.direct variance is the headline finding, and it is in DNS, not TLS.**
+Timing decomposition: when plex.direct spikes, `time_connect` (TCP handshake
+including DNS resolution) spikes. `time_appconnect - time_connect` (TLS
+handshake) stays flat at ~26ms for both nginx and plex.direct across every run.
+The variance comes from DNS: the plex.direct hostname must be resolved through
+Plex's authoritative nameservers, and the DNS TTL is short. When the local cache
+expires, the next connection waits 60–180ms for a response from Plex's DNS
+infrastructure before TCP even begins. nginx uses your own domain's DNS — no
+dependency on Plex's infrastructure and no periodic stalls.
+
+**On median, plex.direct is 4ms faster for the UI endpoint.** That is within
+noise. The meaningful difference is at p95: nginx 74ms vs plex.direct 128ms for
+the UI, and nginx 77ms vs plex.direct 216ms for the API.
 
 **Thumbnail cache cold vs warm.** The first four nginx thumbnail requests
 averaged 151ms (cache-cold, fetching from disk and caching the response). Runs
-5–20 averaged 66ms, matching plex.direct. plex.direct showed the same TLS
-spike pattern on its first and fourth runs (128ms and 121ms).
+5–20 averaged 66ms, matching plex.direct warm.
 
 **Parallel 20-thumbnail wall time:** nginx 104ms, plex.direct 112ms. nginx
 wins here, the reverse of the OVH result where plex.direct won by 28ms. The
 OVH test had a methodology confound (`curl --parallel` opens 20 HTTP/1.1
 connections to plex.direct but only one HTTP/2 connection to nginx), which
-likely over-favored plex.direct. At 300 miles with a residential connection,
-the HTTP/2 multiplexing advantage is visible.
+over-favors plex.direct. nginx wins at site-b despite that handicap.
 
 ### What the tuning changes did not affect
 
@@ -601,10 +607,11 @@ dependency on Plex's infrastructure.
 plex.direct has an unpredictable tail.** From the OVH VPS (35ms RTT), TTFB is
 within 1ms and total time differs by 5ms on index.html — noise margin territory.
 From site-b (residential, 25ms RTT, 300 miles away), the median is again
-competitive, but plex.direct spiked to 122–208ms on three of 20 UI runs.
-Those spikes are cold TLS handshakes routed to distant PoPs in Plex's
-certificate infrastructure. nginx is stable across every run because it
-terminates TLS on your own server.
+competitive (within 4ms), but plex.direct p95 is 128ms vs nginx 74ms for the
+UI endpoint. The spikes are in TCP connect, not TLS: timing decomposition shows
+TLS handshake is identical for both (~26ms), while plex.direct's DNS cache
+misses add 60–180ms before TCP even begins. nginx uses your own domain's DNS
+and has no such dependency.
 
 **HTTP/2 is a wash at VPS distance; nginx wins at residential distance.**
 The OVH parallel thumbnail test showed plex.direct at 155ms vs nginx 183ms —
