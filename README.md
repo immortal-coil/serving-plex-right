@@ -108,6 +108,8 @@ from this guide. Tested from a LAN client, a WAN VPS (~35ms RTT), and a resident
 
 ### Measurement method
 
+**TTFB** (time to first byte): how long until the server sends the first byte of the response. Measures connection setup + server processing. **p95**: the 95th-percentile value across N runs — the worst result seen in 19 out of 20 runs.
+
 ```bash
 curl -w "connect:%{time_connect}s tls:%{time_appconnect}s ttfb:%{time_starttransfer}s total:%{time_total}s\n" \
      -s -o /dev/null https://plex.example.com/web/index.html
