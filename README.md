@@ -4,13 +4,15 @@ This guide covers using nginx as a reverse proxy for Plex, with benchmark
 results comparing a baseline nginx config, a tuned nginx config, and Plex's
 own built-in HTTPS (plex.direct). The primary value of nginx for Plex is cert
 independence: your own Let's Encrypt cert, your domain, and no dependency on
-Plex's rate-limited certificate infrastructure. The performance delta over
-Plex's native HTTPS is modest — both gzip their responses, and in 20-run WAN
-averages the two are within 1ms of each other on TTFB and ~5ms on total time.
+Plex's rate-limited certificate infrastructure. On median TTFB the two are
+within 1ms of each other, but plex.direct's tail latency is unpredictable:
+cold TLS handshakes route to different Plex PoPs and can spike to 3-8x median.
+nginx terminates TLS locally and is always consistent.
 
 Tested with nginx 1.30 on Debian/Ubuntu. LAN clients: smart TVs, streaming
-sticks, Chrome on Windows. WAN tested from an OVH VPS at ~35ms RTT.
-Direct-play HEVC/AC3 library. No transcoding.
+sticks, Chrome on Windows. WAN tested from an OVH VPS (~35ms RTT) and a
+residential site 300 miles away (~25ms RTT). Direct-play HEVC/AC3 library.
+No transcoding.
 
 > **Disclaimer:** This is a reference guide documenting one homelab configuration.
 > It is provided for educational purposes only. Not hardened production advice.
