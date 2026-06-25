@@ -75,188 +75,200 @@ chown www-data:www-data /var/cache/nginx   # adjust user for your distro
 
 ---
 
-## nginx config
+## Benchmark results
 
-### nginx.conf additions to the `http {}` block
+Baseline: a minimal single-location config. Tuned: the four-location config
+from this guide. Tested from a LAN client, a WAN VPS (~35ms RTT), and a residential machine
+300 miles away (~25ms RTT, referred to as site-b) against nginx 1.30.
 
-```nginx
-# Proxy cache zone for Plex thumbnails/posters
-proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=CACHE:10m max_size=512m inactive=60m use_temp_path=off;
+### Measurement method
 
-# WebSocket upgrade map — the "" → "" mapping (not "close") is critical
-# Using "close" here would send Connection: close to Plex and break upstream keepalive
-map $http_upgrade $connection_upgrade {
-    default  "upgrade";
-    ""       "";
-}
-
-# Global proxy defaults
-proxy_connect_timeout   10s;
-proxy_read_timeout      60s;
-proxy_send_timeout      60s;
-proxy_request_buffering off;   # Plex sync/resumption POSTs must reach Plex immediately
-proxy_buffer_size       8k;
-proxy_buffers           8 16k;
-proxy_busy_buffers_size 32k;
-
-# Performance
-server_tokens     off;
-tcp_nodelay       on;
-keepalive_timeout 65;
-open_file_cache   max=200 inactive=60s;
-open_file_cache_valid 120s;
-access_log /var/log/nginx/access.log combined buffer=16k flush=5m;
+```bash
+curl -w "connect:%{time_connect}s tls:%{time_appconnect}s ttfb:%{time_starttransfer}s total:%{time_total}s\n" \
+     -s -o /dev/null https://plex.example.com/web/index.html
 ```
 
-### Plex vhost: `/etc/nginx/sites-enabled/plex.conf`
+### A note on LAN testing
 
-```nginx
-upstream plex {
-    server 127.0.0.1:32400;
-    keepalive 16;   # reuse TCP connections to Plex across UI requests
-}
+LAN results are useful for isolating specific behaviors (cache hit/miss timing,
+TLS session resumption) but are not a representative measure of the tuning's
+real-world value. On a LAN, clients can reach Plex directly over HTTP on
+port 32400, bypassing nginx and TLS entirely (0.3ms vs 13ms). The 13ms TLS
+floor that dominates every LAN measurement is an unavoidable constant, not
+something the nginx config can affect. **WAN results are the meaningful
+comparison** because transfer time and congestion control matter, gzip savings
+are real, and there's no HTTP shortcut available.
 
-# Redirect HTTP → HTTPS
-server {
-    listen 80;
-    listen [::]:80;
-    server_name plex.example.com;
-    return 301 https://$host$request_uri;
-}
+### LAN results (same gigabit segment, ~0.2ms RTT)
 
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
-    server_name plex.example.com;
+#### UI and API: no measurable difference on LAN
 
-    ssl_certificate     /etc/letsencrypt/live/plex.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/plex.example.com/privkey.pem;
-    ssl_trusted_certificate /etc/letsencrypt/live/plex.example.com/chain.pem;
+| Endpoint | Baseline TTFB | Tuned TTFB |
+|---|---|---|
+| `/web/index.html` | 11ms | 10ms |
+| `/library/sections` | 11ms | 11ms |
 
-    include include/ssl.conf;
-    include include/gzip.conf;
+Plex's own response latency sets the floor. TLS on a 0.2ms LAN adds under 1ms
+and is not the bottleneck. Neither config can move this floor, and gzip savings
+are invisible because gigabit absorbs the extra uncompressed bytes in
+microseconds.
 
-    # IMPORTANT: all proxy_set_header directives live here at the server level.
-    # If any location block defines proxy_set_header, nginx drops ALL parent-level
-    # headers for that location — it's a full replacement, not additive.
-    # Keeping headers here and nothing in location blocks avoids that pitfall.
-    proxy_http_version 1.1;
-    proxy_set_header Host              $host;           # required for Plex DNS rebinding protection
-    proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $remote_addr;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header Upgrade           $http_upgrade;
-    proxy_set_header Connection        $connection_upgrade;
-    proxy_set_header Accept-Encoding   "";              # let nginx own compression, not Plex
+#### Thumbnails: negligible difference on LAN
 
-    proxy_buffering off;   # default off; thumbnail location overrides to on
+| Request | Baseline | Tuned |
+|---|---|---|
+| First load (cold) | 10ms | 11ms (MISS) |
+| Second request | 11ms (PhotoTranscoder cache) | **10ms (HIT)** |
+| Third request | 11ms (PhotoTranscoder cache) | **9ms (HIT)** |
 
-    # 1. WebSocket — Plex web client uses this for real-time library and playback updates
-    location /:/websockets/ {
-        proxy_pass http://plex;
-        proxy_read_timeout 3600s;   # WebSocket must survive the full browser session
-    }
+With Plex's PhotoTranscoder cache working, the baseline serves warm thumbnails
+nearly as fast as nginx's cache on LAN. Both configs land within 1–2ms of each
+other. The nginx cache benefit is a WAN story, not a LAN one.
 
-    # 2. Direct-play streaming — video must flow through immediately, not accumulate in nginx
-    location ~ ^/(library/parts|video)/ {
-        proxy_pass http://plex;
-        proxy_request_buffering off;
-        proxy_read_timeout      7200s;   # covers a 2-hour film at direct-play speed
-        proxy_send_timeout      7200s;
-        access_log              off;     # streaming generates thousands of log lines per film
-    }
+### WAN results (OVH VPS, ~35ms RTT)
 
-    # 3. Thumbnails and posters — cache at nginx to avoid repeated round-trips to Plex
-    location /photo/:/ {
-        proxy_pass http://plex;
-        proxy_buffering               on;    # must be on to write to disk cache
-        proxy_cache                   CACHE;
-        proxy_cache_valid             200 1h;
-        proxy_cache_use_stale         error timeout updating;
-        proxy_cache_background_update on;
-        proxy_cache_lock              on;
-        proxy_cache_key               "$host$uri$arg_url$arg_width$arg_height"; # strip X-Plex-Token, keep image identity
-        proxy_ignore_headers          Cache-Control Expires; # Plex sends no-cache; override it
-        add_header X-Cache-Status     $upstream_cache_status always;
-    }
+Steady-state numbers (warm TCP connection, TLS session resumed), 20-run averages.
+Both TTFB (`time_starttransfer`) and total time (`time_total`) shown:
 
-    # 4. Everything else — UI, API, metadata
-    location / {
-        proxy_pass http://plex;
-    }
-}
-```
+| Endpoint | Direct HTTP | plex.direct HTTPS | Baseline nginx | Tuned nginx |
+|---|---|---|---|---|
+| `/web/index.html` TTFB | 70ms | 107ms | 142ms | **108ms** |
+| `/web/index.html` Total | 112ms | 147ms | 143ms | **142ms** |
+| `/library/sections` TTFB | 73ms | 109ms | 110ms | **108ms** |
+| `/library/sections` Total | 73ms | 109ms | 110ms | **108ms** |
+| Thumbnail TTFB | 72ms | 108ms | 143ms | **107ms** |
+| Thumbnail Total | 73ms | 113ms | 143ms | 119ms |
 
-### include/ssl.conf
+**UI: nginx tuned and plex.direct are statistically tied on TTFB** (108ms vs
+107ms). Total time shows nginx 5ms faster on index.html (142ms vs 147ms). Both
+gzip their responses — the advantage is not from gzip but from nginx's TLS
+session cache reducing handshake overhead.
 
-```nginx
-ssl_protocols TLSv1.2 TLSv1.3;
-ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256;
-ssl_prefer_server_ciphers off;
+**Baseline nginx TTFB ≈ total time** on every endpoint. That's the buffering
+artifact: the baseline config's default `proxy_buffering on` causes nginx to
+accumulate the full response before sending the first byte. The tuned config
+sets `proxy_buffering off` to eliminate this.
 
-ssl_session_cache   shared:SSL:10m;
-ssl_session_timeout 1d;
-ssl_session_tickets off;
+**Thumbnail: plex.direct and nginx tuned are effectively tied** on single
+requests (108ms vs 119ms total). Once Plex's PhotoTranscoder cache is
+functioning, the nginx proxy hop offsets the caching benefit.
 
-ssl_stapling        on;
-ssl_stapling_verify on;
-resolver            1.1.1.1 8.8.8.8 valid=300s;
+**API: all configs are within noise** of each other.
 
-add_header Strict-Transport-Security "max-age=15768000" always;
-add_header Referrer-Policy           strict-origin-when-cross-origin always;
-add_header X-Frame-Options           SAMEORIGIN always;
-add_header X-Content-Type-Options    nosniff always;
-```
+### Parallel thumbnail load test (20 simultaneous requests)
 
-### include/gzip.conf
+This tests what actually happens when a Plex client opens a library grid. 20
+distinct thumbnails fetched in parallel from the VPS, wall-clock time:
 
-```nginx
-gzip              on;
-gzip_vary         on;
-gzip_proxied      any;
-gzip_comp_level   4;
-gzip_min_length   1000;
-gzip_types
-    text/plain text/css text/xml text/javascript
-    application/javascript application/json application/xml
-    application/rss+xml image/svg+xml;
-# Omit video/* and audio/* — Plex serves HEVC as video/mp4 and AC3 as audio/x-ac3
-# These are already compressed; running them through gzip wastes CPU and can increase size
-```
+| Config | Run 1 | Run 2 | Run 3 | Avg |
+|---|---|---|---|---|
+| nginx HTTP/2 (cached) | 183ms | 187ms | 180ms | 183ms |
+| plex.direct HTTP/1.1 | 162ms | 149ms | 153ms | **155ms** |
+
+plex.direct wins by ~28ms on parallel loads. HTTP/2 multiplexing over a single
+connection does not overcome the nginx proxy hop at this scale. Plex's HTTP/1.1
+opens parallel connections and finishes first.
+
+### Direct Plex WAN baseline (HTTP :32400, no nginx, no TLS)
+
+Measured from the same VPS with port 32400 temporarily open (20-run averages):
+
+| Endpoint | TTFB | Total |
+|---|---|---|
+| `/web/index.html` | 70ms | 112ms |
+| `/library/sections` | 73ms | 73ms |
+| Thumbnail | 72ms | 73ms |
+
+This is the theoretical floor: no proxy overhead, no TLS, same network path.
+
+**nginx+HTTPS TTFB (108ms) vs direct HTTP TTFB (70ms):** the ~38ms gap is
+almost entirely the TLS 1.3 handshake (~35ms, one RTT). The proxy hop itself
+adds negligible overhead.
+
+**plex.direct HTTPS (107ms) vs direct HTTP (70ms):** the same ~37ms gap —
+pure TLS cost. Both nginx and plex.direct gzip their responses; neither has a
+compression advantage over the other.
+
+**Thumbnails:** all three HTTPS options (nginx 119ms, plex.direct 113ms, HTTP
+73ms) are within a few ms of each other. TLS is the dominant cost; the
+proxy hop and caching effects are in the noise.
+
+**The takeaway:** nginx is not adding meaningful latency beyond TLS. If you're
+serving over HTTPS (which you should be), the proxy overhead is negligible.
+
+### WAN results (site-b, residential, ~25ms RTT)
+
+20-run averages from a residential machine 300 miles from the Plex server.
+Port 32400 is not exposed from site-b, so there is no direct HTTP baseline.
+plex.direct and nginx resolve to the same IP — same physical path, different
+TLS termination.
+
+| Endpoint | plex.direct HTTPS | Tuned nginx |
+|---|---|---|
+| `/web/index.html` TTFB | 76ms avg / 63ms median | **63ms avg / 61ms median** |
+| `/web/index.html` Total | 92ms avg / 81ms median | **79ms avg / 78ms median** |
+| `/library/sections` TTFB | 63ms avg | **62ms avg** |
+| Thumbnail TTFB (warm cache) | 66ms avg | **66ms avg** |
+| Thumbnail Total (warm cache) | 81ms avg | **77ms avg** |
+
+**plex.direct variance is the headline finding.** nginx TTFB stayed between
+52–77ms across all 20 UI runs. plex.direct ranged from 53–208ms, with three
+runs spiking above 120ms. The spikes are cold TLS handshakes routing to
+different PoPs in Plex's certificate infrastructure — the median is competitive,
+but the worst case is 3× nginx's worst case, and you have no control over which
+PoP you land on.
+
+**Thumbnail cache cold vs warm.** The first four nginx thumbnail requests
+averaged 151ms (cache-cold, fetching from disk and caching the response). Runs
+5–20 averaged 66ms, matching plex.direct. plex.direct showed the same TLS
+spike pattern on its first and fourth runs (128ms and 121ms).
+
+**Parallel 20-thumbnail wall time:** nginx 104ms, plex.direct 112ms. nginx
+wins here, the reverse of the OVH result where plex.direct won by 28ms. The
+OVH test had a methodology confound (`curl --parallel` opens 20 HTTP/1.1
+connections to plex.direct but only one HTTP/2 connection to nginx), which
+likely over-favored plex.direct. At 300 miles with a residential connection,
+the HTTP/2 multiplexing advantage is visible.
+
+### What the tuning changes did not affect
+
+- Streaming start time: dominated by Plex's seek-and-respond time, not nginx
+- WebSocket reliability: works correctly in both configs
+- API TTFB: response payloads too small for gzip to matter
+
+### What the baseline config had wrong
+
+Beyond missing gzip and caching, the baseline had two structural issues:
+
+**File extension media matching.** The baseline matched streaming paths via
+`location ~* \.(mp4|mkv|avi|...)$`. Plex streams video at paths like
+`/library/parts/12345/1/file.mkv`. These do end in a file extension so the
+match technically works, but only for known extensions. The location silently
+falls through to the catch-all for anything else. The tuned config uses
+`location ~ ^/(library/parts|video)/` which matches all Plex streaming paths
+regardless of extension.
+
+**`proxy_set_header` in each location block.** The baseline defined all headers
+inside each location block. nginx's inheritance rule means any location that
+defines `proxy_set_header` replaces *all* parent-level headers. Not just the
+ones it explicitly sets. The baseline happens to work because both locations
+define the same header set, but it's fragile: adding a location without the
+full header set would silently drop headers for that location. The tuned config
+keeps all headers at the server block level.
 
 ---
 
-## Why those thumbnail cache directives?
+## nginx config
 
-Two directives in the `/photo/:/` location are non-obvious:
+Full config with annotated explanations: [nginx-config.md](nginx-config.md)
 
-**`proxy_cache_key "$host$uri$arg_url$arg_width$arg_height"`**
+Four location blocks — WebSocket, streaming, thumbnail cache, and catch-all — plus
+separate include files for TLS settings and gzip. Key points:
 
-Plex appends `X-Plex-Token` as a query parameter on thumbnail requests:
-`/photo/:/transcode?url=...&width=150&height=225&X-Plex-Token=abc123`
-
-nginx's default cache key includes `$request_uri` (the full query string). Each
-device has a different token, so each device gets its own cache entry for the
-same poster art. They never share.
-
-The fix is to build the key from only the parameters that identify the image:
-`$arg_url`, `$arg_width`, `$arg_height`. This excludes the token while keeping
-the parts that distinguish one image from another.
-
-Do not use `"$host$uri"` alone (path only, no query string). All thumbnail
-requests share the same path `/photo/:/transcode`, so that key would collapse
-every image to a single cache entry and serve one image for everything.
-
-**`proxy_ignore_headers Cache-Control Expires`**
-
-Plex sends `Cache-Control: no-cache` on `/photo/:/` responses. By default nginx
-respects this and skips the cache, making every thumbnail request a cache miss.
-This directive tells nginx to ignore Plex's Cache-Control and apply your own TTL.
-
-It's safe to ignore Cache-Control on thumbnails. Poster art doesn't change
-mid-session. Don't use this on the UI or API locations where Plex's cache
-headers are intentional.
+- All `proxy_set_header` directives at the server block level (never in location blocks)
+- `proxy_buffering off` globally; thumbnail cache location overrides to `on`
+- Thumbnail cache key excludes `X-Plex-Token` so all devices share cache entries
+- `ssl_session_cache` allows TLS session resumption, eliminating the full handshake on repeat connections
 
 ---
 
@@ -519,188 +531,6 @@ Back up the database directory first. The tool is safe, but a backup costs nothi
 
 ---
 
-## Benchmark results
-
-Baseline: a minimal single-location config. Tuned: the four-location config
-from this guide. Tested from a LAN client, a WAN VPS (~35ms RTT), and a residential machine
-300 miles away (~25ms RTT, referred to as site-b) against nginx 1.30.
-
-### Measurement method
-
-```bash
-curl -w "connect:%{time_connect}s tls:%{time_appconnect}s ttfb:%{time_starttransfer}s total:%{time_total}s\n" \
-     -s -o /dev/null https://plex.example.com/web/index.html
-```
-
-### A note on LAN testing
-
-LAN results are useful for isolating specific behaviors (cache hit/miss timing,
-TLS session resumption) but are not a representative measure of the tuning's
-real-world value. On a LAN, clients can reach Plex directly over HTTP on
-port 32400, bypassing nginx and TLS entirely (0.3ms vs 13ms). The 13ms TLS
-floor that dominates every LAN measurement is an unavoidable constant, not
-something the nginx config can affect. **WAN results are the meaningful
-comparison** because transfer time and congestion control matter, gzip savings
-are real, and there's no HTTP shortcut available.
-
-### LAN results (same gigabit segment, ~0.2ms RTT)
-
-#### UI and API: no measurable difference on LAN
-
-| Endpoint | Baseline TTFB | Tuned TTFB |
-|---|---|---|
-| `/web/index.html` | 11ms | 10ms |
-| `/library/sections` | 11ms | 11ms |
-
-Plex's own response latency sets the floor. TLS on a 0.2ms LAN adds under 1ms
-and is not the bottleneck. Neither config can move this floor, and gzip savings
-are invisible because gigabit absorbs the extra uncompressed bytes in
-microseconds.
-
-#### Thumbnails: negligible difference on LAN
-
-| Request | Baseline | Tuned |
-|---|---|---|
-| First load (cold) | 10ms | 11ms (MISS) |
-| Second request | 11ms (PhotoTranscoder cache) | **10ms (HIT)** |
-| Third request | 11ms (PhotoTranscoder cache) | **9ms (HIT)** |
-
-With Plex's PhotoTranscoder cache working, the baseline serves warm thumbnails
-nearly as fast as nginx's cache on LAN. Both configs land within 1–2ms of each
-other. The nginx cache benefit is a WAN story, not a LAN one.
-
-### WAN results (OVH VPS, ~35ms RTT)
-
-Steady-state numbers (warm TCP connection, TLS session resumed), 20-run averages.
-Both TTFB (`time_starttransfer`) and total time (`time_total`) shown:
-
-| Endpoint | Direct HTTP | plex.direct HTTPS | Baseline nginx | Tuned nginx |
-|---|---|---|---|---|
-| `/web/index.html` TTFB | 70ms | 107ms | 142ms | **108ms** |
-| `/web/index.html` Total | 112ms | 147ms | 143ms | **142ms** |
-| `/library/sections` TTFB | 73ms | 109ms | 110ms | **108ms** |
-| `/library/sections` Total | 73ms | 109ms | 110ms | **108ms** |
-| Thumbnail TTFB | 72ms | 108ms | 143ms | **107ms** |
-| Thumbnail Total | 73ms | 113ms | 143ms | 119ms |
-
-**UI: nginx tuned and plex.direct are statistically tied on TTFB** (108ms vs
-107ms). Total time shows nginx 5ms faster on index.html (142ms vs 147ms). Both
-gzip their responses — the advantage is not from gzip but from nginx's TLS
-session cache reducing handshake overhead.
-
-**Baseline nginx TTFB ≈ total time** on every endpoint. That's the buffering
-artifact: the baseline config's default `proxy_buffering on` causes nginx to
-accumulate the full response before sending the first byte. The tuned config
-sets `proxy_buffering off` to eliminate this.
-
-**Thumbnail: plex.direct and nginx tuned are effectively tied** on single
-requests (108ms vs 119ms total). Once Plex's PhotoTranscoder cache is
-functioning, the nginx proxy hop offsets the caching benefit.
-
-**API: all configs are within noise** of each other.
-
-### Parallel thumbnail load test (20 simultaneous requests)
-
-This tests what actually happens when a Plex client opens a library grid. 20
-distinct thumbnails fetched in parallel from the VPS, wall-clock time:
-
-| Config | Run 1 | Run 2 | Run 3 | Avg |
-|---|---|---|---|---|
-| nginx HTTP/2 (cached) | 183ms | 187ms | 180ms | 183ms |
-| plex.direct HTTP/1.1 | 162ms | 149ms | 153ms | **155ms** |
-
-plex.direct wins by ~28ms on parallel loads. HTTP/2 multiplexing over a single
-connection does not overcome the nginx proxy hop at this scale. Plex's HTTP/1.1
-opens parallel connections and finishes first.
-
-### Direct Plex WAN baseline (HTTP :32400, no nginx, no TLS)
-
-Measured from the same VPS with port 32400 temporarily open (20-run averages):
-
-| Endpoint | TTFB | Total |
-|---|---|---|
-| `/web/index.html` | 70ms | 112ms |
-| `/library/sections` | 73ms | 73ms |
-| Thumbnail | 72ms | 73ms |
-
-This is the theoretical floor: no proxy overhead, no TLS, same network path.
-
-**nginx+HTTPS TTFB (108ms) vs direct HTTP TTFB (70ms):** the ~38ms gap is
-almost entirely the TLS 1.3 handshake (~35ms, one RTT). The proxy hop itself
-adds negligible overhead.
-
-**plex.direct HTTPS (107ms) vs direct HTTP (70ms):** the same ~37ms gap —
-pure TLS cost. Both nginx and plex.direct gzip their responses; neither has a
-compression advantage over the other.
-
-**Thumbnails:** all three HTTPS options (nginx 119ms, plex.direct 113ms, HTTP
-73ms) are within a few ms of each other. TLS is the dominant cost; the
-proxy hop and caching effects are in the noise.
-
-**The takeaway:** nginx is not adding meaningful latency beyond TLS. If you're
-serving over HTTPS (which you should be), the proxy overhead is negligible.
-
-### WAN results (site-b, residential, ~25ms RTT)
-
-20-run averages from a residential machine 300 miles from the Plex server.
-Port 32400 is not exposed from site-b, so there is no direct HTTP baseline.
-plex.direct and nginx resolve to the same IP — same physical path, different
-TLS termination.
-
-| Endpoint | plex.direct HTTPS | Tuned nginx |
-|---|---|---|
-| `/web/index.html` TTFB | 76ms avg / 63ms median | **63ms avg / 61ms median** |
-| `/web/index.html` Total | 92ms avg / 81ms median | **79ms avg / 78ms median** |
-| `/library/sections` TTFB | 63ms avg | **62ms avg** |
-| Thumbnail TTFB (warm cache) | 66ms avg | **66ms avg** |
-| Thumbnail Total (warm cache) | 81ms avg | **77ms avg** |
-
-**plex.direct variance is the headline finding.** nginx TTFB stayed between
-52–77ms across all 20 UI runs. plex.direct ranged from 53–208ms, with three
-runs spiking above 120ms. The spikes are cold TLS handshakes routing to
-different PoPs in Plex's certificate infrastructure — the median is competitive,
-but the worst case is 3× nginx's worst case, and you have no control over which
-PoP you land on.
-
-**Thumbnail cache cold vs warm.** The first four nginx thumbnail requests
-averaged 151ms (cache-cold, fetching from disk and caching the response). Runs
-5–20 averaged 66ms, matching plex.direct. plex.direct showed the same TLS
-spike pattern on its first and fourth runs (128ms and 121ms).
-
-**Parallel 20-thumbnail wall time:** nginx 104ms, plex.direct 112ms. nginx
-wins here, the reverse of the OVH result where plex.direct won by 28ms. The
-OVH test had a methodology confound (`curl --parallel` opens 20 HTTP/1.1
-connections to plex.direct but only one HTTP/2 connection to nginx), which
-likely over-favored plex.direct. At 300 miles with a residential connection,
-the HTTP/2 multiplexing advantage is visible.
-
-### What the tuning changes did not affect
-
-- Streaming start time: dominated by Plex's seek-and-respond time, not nginx
-- WebSocket reliability: works correctly in both configs
-- API TTFB: response payloads too small for gzip to matter
-
-### What the baseline config had wrong
-
-Beyond missing gzip and caching, the baseline had two structural issues:
-
-**File extension media matching.** The baseline matched streaming paths via
-`location ~* \.(mp4|mkv|avi|...)$`. Plex streams video at paths like
-`/library/parts/12345/1/file.mkv`. These do end in a file extension so the
-match technically works, but only for known extensions. The location silently
-falls through to the catch-all for anything else. The tuned config uses
-`location ~ ^/(library/parts|video)/` which matches all Plex streaming paths
-regardless of extension.
-
-**`proxy_set_header` in each location block.** The baseline defined all headers
-inside each location block. nginx's inheritance rule means any location that
-defines `proxy_set_header` replaces *all* parent-level headers. Not just the
-ones it explicitly sets. The baseline happens to work because both locations
-define the same header set, but it's fragile: adding a location without the
-full header set would silently drop headers for that location. The tuned config
-keeps all headers at the server block level.
-
----
 
 ## Common gotchas
 
