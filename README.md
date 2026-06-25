@@ -255,10 +255,11 @@ These kernel settings improve streaming behavior. Apply on the machine running n
 
 BBR (Bottleneck Bandwidth and Round-trip propagation time) is a congestion control algorithm developed by Google. Unlike older algorithms that back off when they detect packet loss, BBR models the network path to keep throughput high. On WAN paths it delivers noticeably better sustained bitrates, which matters for remote Plex clients.
 
-If your Plex host is a **Proxmox LXC container**: `net.ipv4.*` settings must be
-applied inside the container (they're per network namespace). `net.core.*` and
-`net.ipv4.tcp_congestion_control` must be set on the Proxmox host. The LXC
-shares the host kernel for those.
+If your Plex host is a **Proxmox LXC container**: kernel-global settings
+(`net.core.default_qdisc`, `net.ipv4.tcp_congestion_control`) must be set on
+the Proxmox host. Unprivileged LXC has a read-only `/proc/sys` for these knobs.
+The per-socket buffer settings (`rmem_max`, `wmem_max`, `tcp_rmem`, `tcp_wmem`,
+`tcp_slow_start_after_idle`, `tcp_fastopen`) can be set inside the container.
 
 Create `/etc/sysctl.d/99-plex-perf.conf`:
 
@@ -278,9 +279,10 @@ net.ipv4.tcp_slow_start_after_idle = 0
 # Modern browsers have largely disabled TFO; mainly helps non-browser clients
 net.ipv4.tcp_fastopen = 3
 
-# Raise socket buffer ceilings for 4K HEVC throughput
-# With proxy_buffering off, the kernel socket buffer is the stream path
-# Default 256KB can throttle a 4K stream at 50 Mbps before the player pre-buffers enough
+# Raise socket buffer ceilings for high-bitrate streaming
+# tcp_rmem[2] sets the autotuning ceiling (default ~6MB on most distros); rmem_max
+# caps applications that set SO_RCVBUF explicitly. Both raised to 16MB for headroom
+# on high-bitrate HEVC at higher-latency WAN paths.
 net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 net.ipv4.tcp_rmem = 4096 87380 16777216
@@ -539,17 +541,18 @@ are real, and there's no HTTP shortcut available.
 | `/web/index.html` | 13.8ms | 13.7ms |
 | `/library/sections` | 14.1ms | 14.1ms |
 
-TLS handshake (~12.5 ms) dominates. Plex itself responds in under 1ms. Neither
-config can improve on this floor, and gzip savings are invisible because gigabit
-absorbs the extra uncompressed bytes in microseconds.
+Plex's own response latency (~13ms) sets the floor. TLS on a 0.2ms LAN adds
+under 1ms and is not the bottleneck. Neither config can move this floor, and
+gzip savings are invisible because gigabit absorbs the extra uncompressed bytes
+in microseconds.
 
 #### Thumbnails: large difference even on LAN
 
-| Request | Tuned | Baseline |
+| Request | Baseline | Tuned |
 |---|---|---|
-| First load (cold) | 53ms (MISS) | 67ms (MISS) |
-| Second request | **13ms (HIT)** | 43ms (Plex internal cache) |
-| Third request | **13ms (HIT)** | 47ms (Plex internal cache) |
+| First load (cold) | 67ms (MISS) | 53ms (MISS) |
+| Second request | 43ms (Plex internal cache) | **13ms (HIT)** |
+| Third request | 47ms (Plex internal cache) | **13ms (HIT)** |
 
 Thumbnail caching is visible even on LAN. The baseline round-trips to Plex on
 every request; the tuned config serves from nginx at TLS-floor speed after the
@@ -591,11 +594,11 @@ Measured from the same VPS with port 32400 temporarily open:
 
 This is the theoretical floor: no proxy overhead, no TLS, same network path.
 
-**nginx+HTTPS TTFB (153ms) vs direct HTTP TTFB (~74ms):** the ~79ms gap is
-predominantly TLS handshake cost at a 35ms RTT. Gzip recovers ~36ms of that
-transfer time. The net premium for nginx+HTTPS over raw HTTP is roughly one
-extra round-trip for the TLS exchange, and you get encryption, caching, and
-compression for it.
+**nginx+HTTPS TTFB (153ms) vs direct HTTP TTFB (~74ms):** the ~79ms gap splits
+between the TLS 1.3 handshake (~35ms, one RTT) and the nginx-to-Plex proxy hop
+(~44ms). Gzip recovers ~36ms of that transfer time. The net premium for
+nginx+HTTPS over raw HTTP is roughly one extra round-trip, and you get
+encryption, caching, and compression for it.
 
 **Thumbnails via nginx HIT (152ms) vs direct HTTP (103ms):** the ~49ms
 difference is TLS cost. You're paying for encryption, not proxy overhead.
