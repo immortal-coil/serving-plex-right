@@ -4,7 +4,7 @@
 
 Operational procedures for deploying, verifying, maintaining, and rolling back the
 setup in this guide. For rationale and benchmark data, see the README. All commands
-assume Debian/Ubuntu and `plex.example.com` as your domain — replace with your own.
+assume Debian/Ubuntu and `plex.example.com` as your domain. Replace with your own.
 
 ---
 
@@ -26,7 +26,7 @@ assume Debian/Ubuntu and `plex.example.com` as your domain — replace with your
 
 Before starting, confirm:
 
-- **nginx ≥ 1.25.1** — the `http2 on;` directive requires it. Check with `nginx -v`.
+- **nginx ≥ 1.25.1**: the `http2 on;` directive requires it. Check with `nginx -v`.
   Older versions use `listen 443 ssl http2;` in the server block instead.
 - **Plex Media Server** running and reachable locally: `curl -s http://127.0.0.1:32400/identity`
   should return an XML response.
@@ -35,7 +35,7 @@ Before starting, confirm:
   override) works fine.
 - **Port 443 open** in your firewall and forwarded from your router.
 
-Create the nginx cache directory before nginx starts — nginx will not create it:
+Create the nginx cache directory before nginx starts. nginx will not create it:
 
 ```bash
 sudo mkdir -p /var/cache/nginx
@@ -52,8 +52,8 @@ The repo contains two ready-to-use config files under `configs/`:
 
 | File | Use for |
 |---|---|
-| `configs/optimized.conf` | Production — full four-location config with caching |
-| `configs/original.conf` | Baseline — minimal single-location config (for benchmarking comparison) |
+| `configs/optimized.conf` | Production: full four-location config with caching |
+| `configs/original.conf` | Baseline: minimal single-location config (for benchmarking comparison) |
 
 The `http {}` block additions (cache zone, WebSocket map, proxy defaults) go in
 `/etc/nginx/nginx.conf` or a file it includes. See [nginx-config.md](nginx-config.md)
@@ -128,7 +128,7 @@ active:
 sudo systemctl status certbot.timer
 ```
 
-Test that renewal will succeed (dry run — no cert is actually renewed):
+Test that renewal will succeed (dry run, no cert is actually renewed):
 
 ```bash
 sudo certbot renew --dry-run
@@ -293,7 +293,7 @@ echo | openssl s_client -connect plex.example.com:443 2>/dev/null | openssl x509
 
 ### nginx cache management
 
-The cache at `/var/cache/nginx` is self-managing — `inactive=60m` and
+The cache at `/var/cache/nginx` is self-managing. `inactive=60m` and
 `max_size=512m` in the `proxy_cache_path` directive bound its size and age. No
 manual pruning needed. To clear it entirely (e.g. after a library refresh):
 
@@ -387,7 +387,7 @@ sudo chown www-data:www-data /var/cache/nginx
 
 **Cause:** A location block defines `proxy_set_header` directives. nginx's
 inheritance rule: any `proxy_set_header` in a child block replaces *all*
-parent-level headers for that location — including headers the location didn't
+parent-level headers for that location, including headers the location didn't
 explicitly set.
 
 **Fix:** Move all `proxy_set_header` directives to the server block. Location

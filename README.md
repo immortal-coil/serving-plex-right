@@ -1,24 +1,12 @@
 # Serving Plex Right: nginx proxy, TCP tuning, and benchmark results
 
-This guide covers using nginx as a reverse proxy for Plex, with benchmark
-results comparing a baseline nginx config, a tuned nginx config, and Plex's
-own built-in HTTPS (plex.direct). The primary value of nginx for Plex is cert
-independence: your own Let's Encrypt cert, your domain, and no dependency on
-Plex's rate-limited certificate infrastructure. On median TTFB the two are within a few ms of each other, but plex.direct's
-tail latency is unpredictable: its hostname resolves through Plex's nameservers
-with a short DNS TTL, and cache misses add 60–180ms to TCP connect. TLS
-handshake time is consistent for both (~26ms). nginx uses your own domain's DNS
-with no dependency on Plex's infrastructure.
+Running Plex remotely means choosing how you handle TLS. Plex's `*.plex.direct` wildcard cert works until it doesn't. It's provisioned through Plex's own servers and [subject to rate limits](https://forums.plex.tv/t/certificate-stuck-on-429-rate-limit-request-reset/938830): hit the quota and you have no working remote access until Plex resets it. Even when the cert is healthy, the plex.direct hostname resolves through Plex's nameservers on a short TTL. DNS cache misses add 60-180ms to TCP connect before a single byte has moved. That's p95 variance baked into every WAN client's experience.
 
-Tested with nginx 1.30 on Debian/Ubuntu. LAN clients: smart TVs, streaming
-sticks, Chrome on Windows. WAN tested from an OVH VPS (~35ms RTT) and a
-residential site 300 miles away (~25ms RTT). Direct-play HEVC/AC3 library.
-No transcoding.
+nginx with Let's Encrypt eliminates both problems. You own the cert, the renewal cycle, and the domain. Your DNS, your infrastructure, no dependency on Plex's servers.
 
-> **Disclaimer:** This is a reference guide documenting one homelab configuration.
-> It is provided for educational purposes only. Not hardened production advice.
-> Test any changes in your own environment before deploying. No warranty is implied.
-> This project is not affiliated with, endorsed by, or sponsored by Plex Inc.
+This guide covers the nginx config, TCP kernel settings, and Plex settings that get you there. Benchmark results compare a baseline nginx config, tuned nginx, and plex.direct across LAN, a WAN VPS (~35ms RTT), and a residential site 300 miles away (~25ms RTT). Tested with nginx 1.30 on Debian/Ubuntu. Library: direct-play HEVC/AC3 at 1080p, no transcoding.
+
+> Reference guide for one homelab setup. Not hardened production advice. Test in your own environment. Not affiliated with or endorsed by Plex Inc.
 
 ---
 
@@ -29,8 +17,8 @@ No transcoding.
 - [Prerequisites](#prerequisites)
 - [Benchmark results](#benchmark-results)
   - [LAN results](#lan-results)
-  - [WAN results — OVH VPS (~35ms RTT)](#wan-results-ovh-vps-35ms-rtt)
-  - [WAN results — site-b, residential (~25ms RTT)](#wan-results-site-b-residential-25ms-rtt)
+  - [WAN results: OVH VPS (~35ms RTT)](#wan-results-ovh-vps-35ms-rtt)
+  - [WAN results: site-b, residential (~25ms RTT)](#wan-results-site-b-residential-25ms-rtt)
   - [Parallel thumbnail load test](#parallel-thumbnail-load-test-20-simultaneous-requests)
   - [Direct Plex WAN baseline](#direct-plex-wan-baseline-http-32400-no-nginx-no-tls)
 - [nginx config](nginx-config.md)
@@ -55,15 +43,15 @@ Plex already has its own HTTP server, so why add nginx?
   With nginx you own the cert, the renewal cycle, and the domain. If Plex's cert
   infrastructure has problems, your setup is unaffected.
 - **HTTP/2:** nginx speaks HTTP/2 to clients. Plex's own server uses HTTP/1.1.
-  In practice the benefit is minimal — curl parallel tests show Plex's HTTP/1.1
+  In practice the benefit is minimal. Curl parallel tests show Plex's HTTP/1.1
   with multiple connections is competitive with nginx's HTTP/2 multiplexing at
   typical homelab scales.
 - **Thumbnail caching:** nginx can cache poster and artwork responses in RAM. On
-  LAN this adds nothing — Plex's PhotoTranscoder cache is fast enough. Over WAN
+  LAN this adds nothing. Plex's PhotoTranscoder cache is fast enough. Over WAN
   the nginx cache and Plex direct are within a few ms of each other in parallel
   load tests.
 - **Compression:** nginx gzips JSON and web assets with configurable levels and
-  MIME-type filtering. Plex's own server also gzips responses — so this is not
+  MIME-type filtering. Plex's own server also gzips responses. This is not
   a unique nginx advantage. The benefit is control: which types, at what level,
   and without depending on Plex's behavior.
 - **Streaming control:** `proxy_buffering off` on media paths means nginx passes
@@ -108,7 +96,7 @@ from this guide. Tested from a LAN client, a WAN VPS (~35ms RTT), and a resident
 
 ### Measurement method
 
-**TTFB** (time to first byte): how long until the server sends the first byte of the response. Measures connection setup + server processing. **p95**: the 95th-percentile value across N runs — the worst result seen in 19 out of 20 runs.
+**TTFB** (time to first byte): how long until the server sends the first byte of the response. Measures connection setup + server processing. **p95**: the 95th-percentile value across N runs. This is the worst result seen in 19 out of 20 runs.
 
 ```bash
 curl -w "connect:%{time_connect}s tls:%{time_appconnect}s ttfb:%{time_starttransfer}s total:%{time_total}s\n" \
@@ -155,8 +143,8 @@ other. The nginx cache benefit is a WAN story, not a LAN one.
 
 ### WAN results (OVH VPS, ~35ms RTT)
 
-20-run averages. Each measurement is an independent `curl` invocation — fresh
-TCP connection, no TLS session resumption. Both TTFB (`time_starttransfer`) and
+20-run averages. Each measurement is an independent `curl` invocation with a fresh
+TCP connection and no TLS session resumption. Both TTFB (`time_starttransfer`) and
 total time (`time_total`) shown:
 
 | Endpoint | Direct HTTP | plex.direct HTTPS | Baseline nginx | Tuned nginx |
@@ -170,7 +158,7 @@ total time (`time_total`) shown:
 
 **UI: nginx tuned and plex.direct are statistically tied on TTFB** (108ms vs
 107ms). Total time shows nginx 5ms faster on index.html (142ms vs 147ms). Both
-gzip their responses — the advantage is not from gzip but from nginx's TLS
+gzip their responses. The advantage is not from gzip but from nginx's TLS
 session cache reducing handshake overhead.
 
 **Baseline nginx TTFB ≈ total time** on every endpoint. That's the buffering
@@ -214,8 +202,7 @@ This is the theoretical floor: no proxy overhead, no TLS, same network path.
 almost entirely the TLS 1.3 handshake (~35ms, one RTT). The proxy hop itself
 adds negligible overhead.
 
-**plex.direct HTTPS (107ms) vs direct HTTP (70ms):** the same ~37ms gap —
-pure TLS cost. Both nginx and plex.direct gzip their responses; neither has a
+**plex.direct HTTPS (107ms) vs direct HTTP (70ms):** the same ~37ms gap. Pure TLS cost. Both nginx and plex.direct gzip their responses; neither has a
 compression advantage over the other.
 
 **Thumbnails:** all three HTTPS options (nginx 119ms, plex.direct 113ms, HTTP
@@ -229,9 +216,9 @@ serving over HTTPS (which you should be), the proxy overhead is negligible.
 
 20 runs, interleaved (nginx and plex.direct alternating each iteration so both
 face the same network conditions). Each measurement is an independent `curl`
-invocation — fresh TCP connection, no TLS session resumption. Port 32400 is not
+invocation with a fresh TCP connection and no TLS session resumption. Port 32400 is not
 exposed from site-b; there is no direct HTTP baseline. Both targets resolve to
-the same IP — same physical path, different server software.
+the same IP. Same physical path, different server software.
 
 | Endpoint | plex.direct median | plex.direct p95 | nginx median | nginx p95 |
 |---|---|---|---|---|
@@ -246,8 +233,7 @@ handshake) stays flat at ~26ms for both nginx and plex.direct across every run.
 The variance comes from DNS: the plex.direct hostname must be resolved through
 Plex's authoritative nameservers, and the DNS TTL is short. When the local cache
 expires, the next connection waits 60–180ms for a response from Plex's DNS
-infrastructure before TCP even begins. nginx uses your own domain's DNS — no
-dependency on Plex's infrastructure and no periodic stalls.
+infrastructure before TCP even begins. nginx uses your own domain's DNS. No dependency on Plex's infrastructure and no periodic stalls.
 
 **On median, plex.direct is 4ms faster for the UI endpoint.** That is within
 noise. The meaningful difference is at p95: nginx 74ms vs plex.direct 128ms for
@@ -295,7 +281,7 @@ keeps all headers at the server block level.
 
 Full config with annotated explanations: [nginx-config.md](nginx-config.md)
 
-Four location blocks — WebSocket, streaming, thumbnail cache, and catch-all — plus
+Four location blocks (WebSocket, streaming, thumbnail cache, and catch-all), plus
 separate include files for TLS settings and gzip. Key points:
 
 - All `proxy_set_header` directives at the server block level (never in location blocks)
@@ -372,6 +358,8 @@ In Plex web → Settings:
 ---
 
 ## Verifying the setup
+
+Run these checks after first deploy and after any config change.
 
 ```bash
 # nginx config is valid
@@ -607,17 +595,17 @@ dependency on Plex's infrastructure.
 
 **nginx and plex.direct HTTPS are effectively tied on median performance, but
 plex.direct has an unpredictable tail.** From the OVH VPS (35ms RTT), TTFB is
-within 1ms and total time differs by 5ms on index.html — noise margin territory.
+within 1ms and total time differs by 5ms on index.html. That's noise margin territory.
 From site-b (residential, 25ms RTT, 300 miles away), the median is again
 competitive (within 4ms), but plex.direct p95 is 128ms vs nginx 74ms for the
 UI endpoint. The spikes are in TCP connect, not TLS: timing decomposition shows
 TLS handshake is identical for both (~26ms), while plex.direct's DNS cache
-misses add 60–180ms before TCP even begins. nginx uses your own domain's DNS
+misses add 60-180ms before TCP even begins. nginx uses your own domain's DNS
 and has no such dependency.
 
 **HTTP/2 is a wash at VPS distance; nginx wins at residential distance.**
-The OVH parallel thumbnail test showed plex.direct at 155ms vs nginx 183ms —
-but `curl --parallel` opens 20 HTTP/1.1 connections to plex.direct and only
+The OVH parallel thumbnail test showed plex.direct at 155ms vs nginx 183ms.
+But `curl --parallel` opens 20 HTTP/1.1 connections to plex.direct and only
 one HTTP/2 connection to nginx, over-favoring plex.direct. From site-b, the
 same test reversed: nginx 104ms, plex.direct 112ms. The safe read is that
 they are close to even at realistic browser concurrency (~6 connections).
@@ -643,16 +631,16 @@ eliminates both.
 
 ### Which items apply to me?
 
-Storage and network are independent — pick both rows that match your setup, then
+Storage and network are independent. Pick both rows that match your setup, then
 work through the checklist below. nginx is not a speed upgrade; its value is
 cert control and tail-latency consistency.
 
 | Your situation | Do this |
 |---|---|
-| **LAN only** | nginx adds TLS overhead (~13ms floor vs 0.3ms direct HTTP) with no speed benefit on gigabit LAN. Use it only if you need cert control or URL routing; if so, run HTTP on LAN, not HTTPS (see the LAN vhost in the config). Skip thumbnail cache — Plex's PhotoTranscoder cache is sufficient on LAN. Priority items: NVMe metadata, PlexDBRepair, direct play encoding, LAN auth bypass. |
+| **LAN only** | nginx adds TLS overhead (~13ms floor vs 0.3ms direct HTTP) with no speed benefit on gigabit LAN. Use it only if you need cert control or URL routing; if so, run HTTP on LAN, not HTTPS (see the LAN vhost in the config). Skip thumbnail cache. Plex's PhotoTranscoder cache is sufficient on LAN. Priority items: NVMe metadata, PlexDBRepair, direct play encoding, LAN auth bypass. |
 | **Remote / WAN** | nginx for cert control (your domain, no plex.direct rate-limit risk) and consistent tail latency (p95 74ms vs 128ms for the UI endpoint). Enable BBR on the host. Enable the thumbnail cache if library grid loads are slow for remote users. |
 | **NVMe storage** | Storage is not your bottleneck. Thumbnail cache adds minimal benefit when Plex's PhotoTranscoder cache is healthy. Focus on direct play encoding, BBR, and the structural config fixes. |
-| **SATA SSD or spinning disk** | Move Plex's metadata directory to NVMe first — highest single-change impact. If you can't, the thumbnail cache _may_ help repeated grid loads: warm cached files land in the OS page cache after the first disk read. This is untested on SATA; the benefit depends on available RAM and library size. Put the cache dir on a fast disk or tmpfs to avoid SATA reads on cold cache misses. |
+| **SATA SSD or spinning disk** | Move Plex's metadata directory to NVMe first. It's the highest single-change impact. If you can't, the thumbnail cache _may_ help repeated grid loads: warm cached files land in the OS page cache after the first disk read. This is untested on SATA; the benefit depends on available RAM and library size. Put the cache dir on a fast disk or tmpfs to avoid SATA reads on cold cache misses. |
 
 ### Recommendations checklist
 
@@ -661,9 +649,9 @@ The items below have the most impact, roughly in priority order:
 - **NVMe for Plex metadata.** Put the entire Plex Library directory on NVMe
   (database, cache, metadata). Spinning disk or SATA SSD becomes the bottleneck
   well before nginx does. If you can only move one thing, move
-  `Plug-in Support/Databases/` — that's the SQLite database, and every library
+  `Plug-in Support/Databases/`. That's the SQLite database, and every library
   browse hits it. If you're stuck on SATA SSD, the nginx thumbnail cache in this
-  guide may provide measurable relief on library grid loads — it serves warm
+  guide may provide measurable relief on library grid loads. It serves warm
   thumbnails from RAM instead of hitting the disk. That benefit is untested on
   SATA; results would depend on your library size and read patterns.
 - **Let the Cache directory be a real directory.** Do not symlink
@@ -683,7 +671,7 @@ The items below have the most impact, roughly in priority order:
   CPU cost on a Plex server and the biggest source of playback quality loss.
   Encoding to HEVC (x265) + AC3 5.1 at 1080p targets the codec combination
   that direct plays on every common client (Shield, Roku, Apple TV, Plex HTPC,
-  Infuse, Chrome on Windows). Verify in the Plex dashboard — not by assumption.
+  Infuse, Chrome on Windows). Verify in the Plex dashboard, not by assumption.
 - **Disable Plex relay.** Settings → Remote Access → disable relay. Relay
   routes connections through Plex's cloud servers when it cannot confirm a
   direct path. On a properly port-forwarded setup this only adds latency.
@@ -698,9 +686,11 @@ The items below have the most impact, roughly in priority order:
   chunks. The tuned config sets this at the server level and explicitly
   overrides it only for the thumbnail cache location.
 - **Thumbnail cache key excludes the token.** The default nginx cache key
-  includes the full query string — including `X-Plex-Token`. Every device gets
+  includes the full query string, including `X-Plex-Token`. Every device gets
   its own cache entry for the same poster. The fix (`$host$uri$arg_url
   $arg_width$arg_height`) shares entries across devices for the same image.
+
+The tools here cover different layers: nginx for cert control, BBR for sustained WAN throughput, NVMe for metadata, and direct-play encoding to keep the server out of the transcoding path. Fix the cert dependency first. Everything else compounds from there.
 
 ---
 
